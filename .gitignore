@@ -1,1 +1,19 @@
-/transcribe-demo
+# Go build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+*.wasm
+*_test
+/lectr
+
+# Go module cache
+.cache/
+
+# Common build/output directories
+bin/
+build/
+
+# Operating System specific files
+.DS_Store
+Thumbs.db

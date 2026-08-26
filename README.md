@@ -1,5 +1,5 @@
-# transcribe-go
+# lectr
 
 > Work in progress.
 
-An early Go experiment for an interactive lecture-transcription CLI.
+A small local-first CLI for turning class recordings into transcripts.
