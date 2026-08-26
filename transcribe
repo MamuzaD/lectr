@@ -1,0 +1,546 @@
+#!/usr/bin/env python3
+
+"""Transcribe and combine dated class voice memos with a small terminal UI."""
+
+from __future__ import annotations
+
+import argparse
+import codecs
+from collections import deque
+from dataclasses import dataclass
+from datetime import datetime
+import os
+from pathlib import Path
+import queue
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+
+
+SEMESTER_DIR = Path(__file__).resolve().parent
+DEFAULT_COURSES = ("MATH351", "MATH451")
+DEFAULT_MODEL = "mlx-community/whisper-large-v3-turbo"
+AUDIO_EXTENSIONS = {".m4a", ".mp3", ".wav"}
+MEMO_PATTERN = re.compile(
+    r"^(?P<date>\d{4}-\d{2}-\d{2})-pt(?P<part>\d{2})"
+    r"(?P<extension>\.m4a|\.mp3|\.wav)$"
+)
+SELECTOR_PATTERN = re.compile(
+    r"^\d{4}-\d{2}-\d{2}(?:-pt\d{2}\.(?:m4a|mp3|wav))?$"
+)
+ANSI_PATTERN = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+COLOR = sys.stdout.isatty() and "NO_COLOR" not in os.environ
+RESET = "\033[0m" if COLOR else ""
+BOLD = "\033[1m" if COLOR else ""
+DIM = "\033[2m" if COLOR else ""
+GREEN = "\033[38;2;163;177;138m" if COLOR else ""
+ACCENT = "\033[38;2;249;115;22m" if COLOR else ""
+MUTED = "\033[38;2;168;162;158m" if COLOR else ""
+WHITE = "\033[38;2;255;247;237m" if COLOR else ""
+RED = "\033[38;2;248;113;113m" if COLOR else ""
+
+LOGO = (
+    "╺┳╸┏━┓┏━┓┏┓╻┏━┓┏━╸┏━┓╻┏┓ ┏━╸",
+    " ┃ ┣┳┛┣━┫┃┗┫┗━┓┃  ┣┳┛┃┣┻┓┣╸ ",
+    " ╹ ╹┗╸╹ ╹╹ ╹┗━┛┗━╸╹┗╸╹┗━┛┗━╸",
+)
+GRADIENT_STOPS = ((146, 64, 14), (234, 88, 12), (251, 191, 36))
+SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
+@dataclass
+class Memo:
+    course: str
+    path: Path
+    date: str
+    part: str
+    stem: str
+    duration: str
+    status: str = "waiting"
+    percent: int = 0
+    detail: str = ""
+
+
+def rgb(red: int, green: int, blue: int) -> str:
+    return f"\033[38;2;{red};{green};{blue}m" if COLOR else ""
+
+
+def gradient(text: str) -> str:
+    if not COLOR or not text:
+        return text
+    pieces: list[str] = []
+    denominator = max(len(text) - 1, 1)
+    for index, character in enumerate(text):
+        position = (index / denominator) * (len(GRADIENT_STOPS) - 1)
+        segment = min(int(position), len(GRADIENT_STOPS) - 2)
+        amount = position - segment
+        start = GRADIENT_STOPS[segment]
+        end = GRADIENT_STOPS[segment + 1]
+        shade = tuple(
+            round(left + (right - left) * amount)
+            for left, right in zip(start, end)
+        )
+        pieces.append(f"{rgb(*shade)}{character}")
+    return "".join(pieces) + RESET
+
+
+def progress_bar(percent: int, width: int = 34) -> str:
+    filled = round(width * max(0, min(percent, 100)) / 100)
+    return gradient("━" * filled) + f"{DIM}{'─' * (width - filled)}{RESET}"
+
+
+def lecture_title(date_string: str) -> str:
+    date = datetime.strptime(date_string, "%Y-%m-%d")
+    return f"{date.strftime('%B')} {date.day}, {date.year}"
+
+
+def audio_duration(path: Path) -> str:
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    try:
+        total_seconds = round(float(result.stdout.strip()))
+    except ValueError:
+        return "--:--"
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def transcript_passes_quality_check(path: Path) -> bool:
+    # whisper can loop on one sentence for minutes
+    repeated = 0
+    previous = ""
+    with path.open(encoding="utf-8", errors="replace") as transcript:
+        for raw_line in transcript:
+            line = " ".join(raw_line.split())
+            if len(line) > 3 and line == previous:
+                repeated += 1
+                if repeated >= 6:
+                    return False
+            else:
+                repeated = 0
+            previous = line
+    return True
+
+
+def prompt_for(course: str) -> str:
+    if course == "MATH351":
+        return (
+            "University lecture for MATH 351 Applied Combinatorics. "
+            "Use mathematical terminology, especially graph theory and "
+            "combinatorics vocabulary."
+        )
+    if course == "MATH451":
+        return (
+            "University lecture for MATH 451 Mathematical Logic. Use "
+            "mathematical terminology and preserve symbolic logic vocabulary."
+        )
+    return "University mathematics lecture. Use appropriate mathematical terminology."
+
+
+class LectureUI:
+    def __init__(self, course: str, date: str, memos: list[Memo]) -> None:
+        self.course = course
+        self.date = date
+        self.memos = memos
+        self.combine_status = "waiting"
+        self.combined_path: Path | None = None
+        self.frame = 0
+        self.previous_height = 0
+        self.enabled = sys.stdout.isatty()
+
+    def __enter__(self) -> "LectureUI":
+        if self.enabled:
+            sys.stdout.write("\033[?25l")
+            sys.stdout.flush()
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        if self.enabled:
+            sys.stdout.write("\033[?25h" + RESET + "\n")
+            sys.stdout.flush()
+
+    def render(self) -> list[str]:
+        lines = [
+            "",
+            *(f"  {BOLD}{gradient(line)}{RESET}" for line in LOGO),
+            "",
+            (
+                f"  {MUTED}{self.course}  ·  {lecture_title(self.date)}  ·  "
+                f"{len(self.memos)} recording{'s' if len(self.memos) != 1 else ''}{RESET}"
+            ),
+            "",
+        ]
+
+        spinner = SPINNER_FRAMES[self.frame % len(SPINNER_FRAMES)]
+        for memo in self.memos:
+            if memo.status == "complete":
+                lines.append(
+                    f"  {GREEN}✓{RESET}  pt{memo.part}  {WHITE}Complete{RESET}"
+                    f"       {MUTED}{memo.duration} audio{RESET}"
+                )
+                lines.append("")
+            elif memo.status == "skipped":
+                lines.append(
+                    f"  {GREEN}✓{RESET}  pt{memo.part}  {WHITE}Already exists{RESET}"
+                    f" {MUTED}{memo.duration} audio{RESET}"
+                )
+                lines.append("")
+            elif memo.status == "failed":
+                lines.append(
+                    f"  {RED}×{RESET}  pt{memo.part}  {WHITE}Failed{RESET}"
+                    f"         {MUTED}{memo.duration} audio{RESET}"
+                )
+                lines.append(f"     {RED}{memo.detail}{RESET}")
+            elif memo.status == "active":
+                label = memo.detail or "Transcribing"
+                lines.append(
+                    f"  {ACCENT}{spinner}{RESET}  pt{memo.part}  {WHITE}{label}{RESET}"
+                    f"  {MUTED}{memo.duration} audio{RESET}"
+                )
+                lines.append(
+                    f"     {progress_bar(memo.percent)}  {BOLD}{memo.percent:3d}%{RESET}"
+                )
+            else:
+                lines.append(
+                    f"  {DIM}○  pt{memo.part}  Waiting        {memo.duration} audio{RESET}"
+                )
+                lines.append("")
+
+        if self.combine_status == "active":
+            part_names = " + ".join(f"pt{memo.part}" for memo in self.memos)
+            lines.extend(
+                [
+                    f"  {ACCENT}{spinner}{RESET}  {WHITE}Combining {len(self.memos)} parts{RESET}",
+                    f"     {MUTED}{part_names}  →  {self.date}.txt{RESET}",
+                ]
+            )
+        elif self.combine_status == "complete" and self.combined_path:
+            lines.extend(
+                [
+                    f"  {GREEN}✓{RESET}  {WHITE}Combined {len(self.memos)} parts{RESET}",
+                    f"     {BOLD}{gradient(str(self.combined_path.relative_to(SEMESTER_DIR)))}{RESET}",
+                ]
+            )
+        else:
+            lines.extend([f"  {DIM}○  Combine parts  Waiting{RESET}", ""])
+
+        lines.extend(
+            [
+                "",
+                f"  {MUTED}Local processing  ·  Recordings stay on this Mac{RESET}",
+                "",
+            ]
+        )
+        return lines
+
+    def draw(self) -> None:
+        if not self.enabled:
+            return
+        self.frame += 1
+        lines = self.render()
+        if self.previous_height:
+            sys.stdout.write(f"\033[{self.previous_height}A")
+        # clear leftover lines when the ui shrinks
+        height = max(len(lines), self.previous_height)
+        lines.extend([""] * (height - len(lines)))
+        for line in lines:
+            sys.stdout.write(f"\r\033[2K{line}\n")
+        sys.stdout.flush()
+        self.previous_height = height
+
+
+def parse_progress(message: str, memo: Memo) -> None:
+    # tqdm redraws progress with carriage returns
+    clean = ANSI_PATTERN.sub("", message).strip()
+    if not clean:
+        return
+    percent_match = re.search(r"(?<!\d)(\d{1,3})%\|", clean)
+    if percent_match:
+        memo.percent = min(int(percent_match.group(1)), 100)
+    if "frames/s" in clean:
+        memo.detail = "Transcribing"
+    elif "Reconstruct" in clean:
+        memo.detail = "Preparing model"
+    elif "Downloading" in clean or "Fetching" in clean:
+        memo.detail = "Downloading model"
+
+
+def stream_process(command: list[str], memo: Memo, ui: LectureUI) -> tuple[int, list[str]]:
+    if not ui.enabled:
+        result = subprocess.run(command, check=False)
+        return result.returncode, []
+
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=0,
+    )
+    messages: queue.Queue[str] = queue.Queue()
+    log_tail: deque[str] = deque(maxlen=30)
+
+    def read_output() -> None:
+        assert process.stdout is not None
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        pending = ""
+        while chunk := process.stdout.read(1024):
+            pending += decoder.decode(chunk)
+            pieces = re.split(r"[\r\n]", pending)
+            pending = pieces.pop()
+            for piece in pieces:
+                messages.put(piece)
+        pending += decoder.decode(b"", final=True)
+        if pending:
+            messages.put(pending)
+
+    reader = threading.Thread(target=read_output, daemon=True)
+    reader.start()
+    try:
+        while process.poll() is None or reader.is_alive() or not messages.empty():
+            while True:
+                try:
+                    message = messages.get_nowait()
+                except queue.Empty:
+                    break
+                clean = ANSI_PATTERN.sub("", message).strip()
+                if clean:
+                    log_tail.append(clean)
+                parse_progress(message, memo)
+            ui.draw()
+            time.sleep(0.08)
+    except KeyboardInterrupt:
+        process.terminate()
+        process.wait()
+        raise
+    reader.join()
+    return process.wait(), list(log_tail)
+
+
+def transcribe_memo(memo: Memo, transcript_dir: Path, model: str, ui: LectureUI) -> None:
+    transcript = transcript_dir / f"{memo.stem}.txt"
+    # mlx_whisper treats dots in output names as extensions
+    temporary_stem = f"{memo.stem}-new-{os.getpid()}"
+    temporary_transcript = transcript_dir / f"{temporary_stem}.txt"
+    memo.status = "active"
+    memo.percent = 0
+    memo.detail = "Starting Whisper"
+    ui.draw()
+    command = [
+        "mlx_whisper",
+        str(memo.path),
+        "--model", model,
+        "--language", "en",
+        "--initial-prompt", prompt_for(memo.course),
+        "--condition-on-previous-text", "False",
+        "--word-timestamps", "True",
+        "--hallucination-silence-threshold", "2",
+        "--output-dir", str(transcript_dir),
+        "--output-name", temporary_stem,
+        "--output-format", "txt",
+        "--verbose", "False",
+    ]
+    return_code, logs = stream_process(command, memo, ui)
+    if return_code != 0 or not temporary_transcript.exists():
+        memo.status = "failed"
+        memo.detail = next(
+            (line for line in reversed(logs) if "error" in line.lower()),
+            "Whisper did not create a transcript",
+        )
+        ui.draw()
+        raise RuntimeError(f"{memo.course}: transcription failed for {memo.path.name}")
+    if not transcript_passes_quality_check(temporary_transcript):
+        rejected = transcript_dir / f"{memo.stem}.rejected.txt"
+        temporary_transcript.replace(rejected)
+        memo.status = "failed"
+        memo.detail = "Repetition loop detected; output saved as .rejected.txt"
+        ui.draw()
+        raise RuntimeError(f"{memo.course}: repetition loop detected in {rejected.name}")
+    temporary_transcript.replace(transcript)
+    memo.status = "complete"
+    memo.percent = 100
+    memo.detail = ""
+    ui.draw()
+
+
+def combine_parts(course: str, date: str) -> Path:
+    transcript_dir = SEMESTER_DIR / course / "transcripts"
+    parts = sorted(transcript_dir.glob(f"{date}-pt[0-9][0-9].txt"))
+    if not parts:
+        raise RuntimeError(f"{course}: no transcripts available to combine for {date}")
+    for part in parts:
+        if not transcript_passes_quality_check(part):
+            raise RuntimeError(
+                f"{course}: repetition loop detected in {part.name}; rerun with --force"
+            )
+    destination = transcript_dir / f"{date}.txt"
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=transcript_dir, delete=False
+    ) as temporary:
+        temporary_path = Path(temporary.name)
+        for part in parts:
+            part_number = part.stem.rsplit("-pt", 1)[1]
+            temporary.write(f"===== Part {part_number} =====\n\n")
+            temporary.write(part.read_text(encoding="utf-8").rstrip())
+            temporary.write("\n\n")
+    temporary_path.replace(destination)
+    return destination
+
+
+def discover(course: str, selector: str | None) -> list[Memo]:
+    course_dir = SEMESTER_DIR / course
+    if not course_dir.is_dir():
+        raise RuntimeError(f"Course directory not found: {course_dir}")
+    memo_dir = course_dir / "memos"
+    if not memo_dir.is_dir():
+        return []
+    memos: list[Memo] = []
+    for path in sorted(memo_dir.iterdir()):
+        if path.suffix.lower() not in AUDIO_EXTENSIONS:
+            continue
+        match = MEMO_PATTERN.fullmatch(path.name)
+        if not match:
+            print(f"{course}: skipping incorrectly named memo: {path.name}", file=sys.stderr)
+            continue
+        if selector and path.name != selector and match["date"] != selector:
+            continue
+        memos.append(
+            Memo(
+                course=course,
+                path=path,
+                date=match["date"],
+                part=match["part"],
+                stem=path.stem,
+                duration=audio_duration(path),
+            )
+        )
+    return memos
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Transcribe <course>/memos, then combine recording parts into one "
+            "dated transcript."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""examples:
+  ./transcribe
+  ./transcribe MATH351
+  ./transcribe MATH351 2026-08-24
+  ./transcribe MATH351 2026-08-24-pt02.m4a
+
+recordings must use YYYY-MM-DD-ptNN.m4a, such as:
+  2026-08-24-pt01.m4a
+  2026-08-24-pt02.m4a
+
+set WHISPER_MODEL to override mlx-community/whisper-large-v3-turbo.
+""",
+    )
+    parser.add_argument("course", nargs="?", help="course directory (default: both math courses)")
+    parser.add_argument("selector", nargs="?", help="YYYY-MM-DD or a complete memo filename")
+    parser.add_argument("--force", action="store_true", help="replace existing part transcripts")
+    parser.add_argument("--dry-run", action="store_true", help="show work without changing files")
+    args = parser.parse_args()
+    if args.selector and not SELECTOR_PATTERN.fullmatch(args.selector):
+        parser.error("selector must be YYYY-MM-DD or YYYY-MM-DD-ptNN.m4a")
+    return args
+
+
+def main() -> int:
+    args = parse_args()
+    courses = (args.course,) if args.course else DEFAULT_COURSES
+    model = os.environ.get("WHISPER_MODEL", DEFAULT_MODEL)
+    if not args.dry_run and shutil.which("mlx_whisper") is None:
+        print("mlx_whisper is not installed or is not on PATH.", file=sys.stderr)
+        print("Install it with: uv tool install mlx-whisper", file=sys.stderr)
+        return 1
+
+    discovered: list[Memo] = []
+    try:
+        for course in courses:
+            memos = discover(course, args.selector)
+            if not memos and not (SEMESTER_DIR / course / "memos").is_dir():
+                print(f"{course}: no memos directory; skipping")
+            discovered.extend(memos)
+    except RuntimeError as error:
+        print(error, file=sys.stderr)
+        return 1
+    if not discovered:
+        target = f": {args.selector}" if args.selector else "."
+        print(f"No correctly named memos found{target}", file=sys.stderr)
+        return 1
+
+    groups: dict[tuple[str, str], list[Memo]] = {}
+    for memo in discovered:
+        groups.setdefault((memo.course, memo.date), []).append(memo)
+
+    if args.dry_run:
+        for (course, date), memos in groups.items():
+            transcript_dir = SEMESTER_DIR / course / "transcripts"
+            for memo in memos:
+                transcript = transcript_dir / f"{memo.stem}.txt"
+                action = "replace" if transcript.exists() and args.force else "transcribe"
+                if transcript.exists() and not args.force:
+                    action = "skip existing"
+                print(f"{course}: would {action}: {memo.path.name}")
+            print(f"{course}: would combine parts -> transcripts/{date}.txt")
+        return 0
+
+    try:
+        for (course, date), memos in groups.items():
+            transcript_dir = SEMESTER_DIR / course / "transcripts"
+            transcript_dir.mkdir(parents=True, exist_ok=True)
+            for memo in memos:
+                transcript = transcript_dir / f"{memo.stem}.txt"
+                if transcript.exists() and not args.force:
+                    if not transcript_passes_quality_check(transcript):
+                        raise RuntimeError(
+                            f"{course}: repetition loop detected in {transcript.name}; "
+                            "run again with --force"
+                        )
+                    memo.status = "skipped"
+
+            with LectureUI(course, date, memos) as ui:
+                ui.draw()
+                for memo in memos:
+                    if memo.status != "skipped":
+                        transcribe_memo(memo, transcript_dir, model, ui)
+                ui.combine_status = "active"
+                ui.draw()
+                time.sleep(0.25)
+                combined = combine_parts(course, date)
+                ui.combined_path = combined
+                ui.combine_status = "complete"
+                ui.draw()
+    except KeyboardInterrupt:
+        print("Transcription cancelled.", file=sys.stderr)
+        return 130
+    except RuntimeError as error:
+        print(error, file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
