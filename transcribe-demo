@@ -1,0 +1,340 @@
+#!/usr/bin/env python3
+
+"""Preview the real transcription UI without processing audio."""
+
+from __future__ import annotations
+
+from datetime import date, timedelta
+import os
+from pathlib import Path
+import runpy
+import select
+import shutil
+import signal
+import sys
+import termios
+import time
+import tty
+
+
+SEMESTER_DIR = Path(__file__).resolve().parent
+TRANSCRIBE = runpy.run_path(str(SEMESTER_DIR / "transcribe"))
+BaseLectureUI = TRANSCRIBE["LectureUI"]
+Memo = TRANSCRIBE["Memo"]
+ACCENT = TRANSCRIBE["ACCENT"]
+BOLD = TRANSCRIBE["BOLD"]
+DIM = TRANSCRIBE["DIM"]
+GREEN = TRANSCRIBE["GREEN"]
+MUTED = TRANSCRIBE["MUTED"]
+RESET = TRANSCRIBE["RESET"]
+WHITE = TRANSCRIBE["WHITE"]
+gradient = TRANSCRIBE["gradient"]
+
+READY_LECTURES = (
+    ("MATH351", "2026-11-10", "1:11:08"),
+    ("MATH451", "2026-11-10", "1:13:26"),
+    ("MATH351", "2026-11-12", "1:09:41"),
+    ("MATH451", "2026-11-12", "1:14:02"),
+    ("MATH351", "2026-11-17", "1:10:35"),
+    ("MATH451", "2026-11-17", "1:12:19"),
+    ("MATH351", "2026-11-19", "1:12:44"),
+    ("MATH451", "2026-11-19", "1:14:18"),
+)
+TODAY = READY_LECTURES[-2:]
+WEEKS = tuple(date(2026, 8, 24) + timedelta(weeks=week) for week in range(13))
+COURSES = ("MATH351", "MATH451")
+ACTIVITY = {
+    (meeting.isoformat(), course): "complete"
+    for week in WEEKS
+    for meeting in (week + timedelta(days=1), week + timedelta(days=3))
+    for course in COURSES
+}
+MISSING_DATES = ("2026-09-10", "2026-10-06", "2026-10-29")
+BACKLOG_DATES = ("2026-11-10", "2026-11-12", "2026-11-17", "2026-11-19")
+for meeting in MISSING_DATES:
+    for course in COURSES:
+        ACTIVITY[(meeting, course)] = "missing"
+for meeting in BACKLOG_DATES:
+    for course in COURSES:
+        ACTIVITY[(meeting, course)] = "ready"
+
+
+def restore_terminal(*_: object) -> None:
+    sys.stdout.write("\033[?25h\033[0m")
+    sys.stdout.flush()
+
+
+def demo_memo(course: str, lecture_date: str, duration: str):
+    return Memo(
+        course=course,
+        path=SEMESTER_DIR / course / "memos" / f"{lecture_date}-pt01.m4a",
+        date=lecture_date,
+        part="01",
+        stem=f"{lecture_date}-pt01",
+        duration=duration,
+    )
+
+
+def activity_square(status: str) -> str:
+    if status == "complete":
+        return f"{GREEN}■{RESET}"
+    if status == "active":
+        return f"{ACCENT}■{RESET}"
+    if status == "missing":
+        return f"{DIM}·{RESET}"
+    return f"{DIM}□{RESET}"
+
+
+def activity_lines() -> list[str]:
+    month_labels = []
+    previous_month = 0
+    for index, week in enumerate(WEEKS):
+        meeting = week + timedelta(days=1)
+        if index and meeting.month != previous_month:
+            month_labels.append(meeting.strftime("%b"))
+        else:
+            month_labels.append("   ")
+        previous_month = meeting.month
+    months = "".join(month_labels).rstrip()
+    dates = " ".join((week + timedelta(days=1)).strftime("%d") for week in WEEKS)
+    lines = [
+        f"  {BOLD}{WHITE}Lecture activity{RESET}  {MUTED}·  Aug–Nov 2026{RESET}",
+        f"             {MUTED}{months}{RESET}",
+        f"             {MUTED}{dates}{RESET}",
+    ]
+    for label, offset in (("Tuesday", 1), ("Thursday", 3)):
+        cells = []
+        for week in WEEKS:
+            meeting = (week + timedelta(days=offset)).isoformat()
+            pair = "".join(
+                activity_square(ACTIVITY[(meeting, course)]) for course in COURSES
+            )
+            cells.append(pair)
+        lines.append(f"  {MUTED}{label:<9}{RESET}  " + " ".join(cells))
+    lines.extend(
+        [
+            f"             {MUTED}each pair: 351 451{RESET}",
+            (
+                f"             {GREEN}■{RESET} {MUTED}transcribed{RESET}   "
+                f"{ACCENT}■{RESET} {MUTED}active{RESET}   "
+                f"{DIM}□ ready   · no memo{RESET}"
+            ),
+        ]
+    )
+    return lines
+
+
+def menu_option(label: str, detail: str, selected: bool) -> str:
+    pointer = f"{ACCENT}›{RESET}" if selected else " "
+    style = f"{BOLD}{WHITE}" if selected else WHITE
+    return f"  {pointer} {style}{label:<24}{RESET}{MUTED}{detail}{RESET}"
+
+
+def backlog_menu(selected: int) -> list[str]:
+    options = (
+        ("Catch up everything", "8 recordings"),
+        ("Today only", "2 recordings"),
+        ("Choose recordings", ""),
+        ("Exit", ""),
+    )
+    lines = [
+        f"  {WHITE}8 recordings ready{RESET}  {MUTED}·  4 lecture days  ·  about 9h 45m audio{RESET}",
+        "",
+        f"  {BOLD}{WHITE}What do you want to transcribe?{RESET}",
+        "",
+    ]
+    lines.extend(
+        menu_option(label, detail, index == selected)
+        for index, (label, detail) in enumerate(options)
+    )
+    lines.extend(
+        [
+            "",
+            f"  {MUTED}↑↓ move  ·  enter select{RESET}",
+            f"  {MUTED}Local processing  ·  Recordings stay on this Mac{RESET}",
+            "",
+        ]
+    )
+    return lines
+
+
+def recording_menu(cursor: int, selected: set[int]) -> list[str]:
+    lines = [
+        f"  {BOLD}{WHITE}Choose recordings{RESET}",
+        "",
+    ]
+    for index, (course, lecture_date, duration) in enumerate(READY_LECTURES):
+        meeting = date.fromisoformat(lecture_date).strftime("%a, %b %d")
+        pointer = f"{ACCENT}›{RESET}" if index == cursor else " "
+        checked = f"{GREEN}■{RESET}" if index in selected else f"{DIM}□{RESET}"
+        label = f"{meeting}  {course}"
+        lines.append(
+            f"  {pointer} {checked} {WHITE}{label:<23}{RESET}{MUTED}{duration}{RESET}"
+        )
+    lines.extend(
+        [
+            "",
+            f"  {MUTED}↑↓ move  ·  space toggle  ·  enter confirm  ·  esc back{RESET}",
+            "",
+        ]
+    )
+    return lines
+
+
+class DemoLectureUI(BaseLectureUI):
+    menu = "backlog"
+    menu_index = 0
+    selected_recordings: set[int] = set()
+
+    def render(self) -> list[str]:
+        lines = super().render()
+        divider = f"  {gradient('╺' + '━' * 50 + '╸')}"
+        if self.menu == "backlog":
+            return [
+                *lines[:5],
+                *activity_lines(),
+                "",
+                divider,
+                "",
+                *backlog_menu(self.menu_index),
+            ]
+        if self.menu == "recordings":
+            return [
+                *lines[:5],
+                *activity_lines(),
+                "",
+                divider,
+                "",
+                *recording_menu(self.menu_index, self.selected_recordings),
+            ]
+        return [*lines[:5], *activity_lines(), "", divider, "", *lines[5:]]
+
+
+def read_key() -> str:
+    descriptor = sys.stdin.fileno()
+    previous = termios.tcgetattr(descriptor)
+    try:
+        tty.setcbreak(descriptor)
+        key = os.read(descriptor, 1).decode()
+        if key == "\x1b":
+            while select.select([descriptor], [], [], 0.02)[0]:
+                key += os.read(descriptor, 1).decode()
+        return key
+    finally:
+        termios.tcsetattr(descriptor, termios.TCSADRAIN, previous)
+
+
+def choose_recordings(ui: DemoLectureUI) -> tuple[tuple[str, str, str], ...] | None:
+    ui.menu = "recordings"
+    ui.menu_index = 0
+    ui.selected_recordings = set()
+    while True:
+        ui.draw()
+        key = read_key()
+        if key in ("\x1b[A", "k"):
+            ui.menu_index = (ui.menu_index - 1) % len(READY_LECTURES)
+        elif key in ("\x1b[B", "j"):
+            ui.menu_index = (ui.menu_index + 1) % len(READY_LECTURES)
+        elif key == " ":
+            if ui.menu_index in ui.selected_recordings:
+                ui.selected_recordings.remove(ui.menu_index)
+            else:
+                ui.selected_recordings.add(ui.menu_index)
+        elif key in ("\r", "\n") and ui.selected_recordings:
+            return tuple(
+                lecture
+                for index, lecture in enumerate(READY_LECTURES)
+                if index in ui.selected_recordings
+            )
+        elif key == "\x1b":
+            ui.menu = "backlog"
+            ui.menu_index = 0
+            return None
+        elif key == "\x03":
+            raise KeyboardInterrupt
+
+
+def choose_action(ui: DemoLectureUI) -> tuple[tuple[str, str, str], ...]:
+    while True:
+        ui.draw()
+        key = read_key()
+        if key in ("\x1b[A", "k"):
+            ui.menu_index = (ui.menu_index - 1) % 4
+        elif key in ("\x1b[B", "j"):
+            ui.menu_index = (ui.menu_index + 1) % 4
+        elif key in ("\r", "\n"):
+            if ui.menu_index == 0:
+                return READY_LECTURES
+            if ui.menu_index == 1:
+                return TODAY
+            if ui.menu_index == 2:
+                recordings = choose_recordings(ui)
+                if recordings is not None:
+                    return recordings
+            else:
+                return ()
+        elif key == "\x03":
+            raise KeyboardInterrupt
+
+
+def animate_lecture(
+    ui: DemoLectureUI, course: str, lecture_date: str, duration: str
+) -> None:
+    memo = demo_memo(course, lecture_date, duration)
+    ui.course = course
+    ui.date = lecture_date
+    ui.memos = [memo]
+    ui.combine_status = "waiting"
+    ui.combined_path = None
+    ui.draw()
+
+    ACTIVITY[(lecture_date, course)] = "active"
+    memo.status = "active"
+    for percent in range(0, 101, 4):
+        memo.percent = percent
+        if percent < 12:
+            memo.detail = "Starting Whisper"
+        elif percent < 28:
+            memo.detail = "Preparing model"
+        else:
+            memo.detail = "Transcribing"
+        ui.draw()
+        time.sleep(0.025)
+    memo.status = "complete"
+    memo.detail = ""
+    ACTIVITY[(lecture_date, course)] = "complete"
+    ui.draw()
+
+    ui.combine_status = "active"
+    for _ in range(12):
+        ui.draw()
+        time.sleep(0.06)
+
+    ui.combine_status = "complete"
+    ui.combined_path = (
+        SEMESTER_DIR / course / "transcripts" / f"{lecture_date}.txt"
+    )
+    ui.draw()
+    time.sleep(0.65)
+
+
+def main() -> None:
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        raise SystemExit("transcribe-demo needs an interactive terminal")
+    if shutil.get_terminal_size().columns < 64:
+        print("Tip: widen the terminal to at least 64 columns for the full demo.\n")
+
+    signal.signal(signal.SIGINT, lambda *_: (restore_terminal(), sys.exit(130)))
+    signal.signal(signal.SIGTERM, lambda *_: (restore_terminal(), sys.exit(143)))
+
+    course, lecture_date, duration = TODAY[0]
+    ui = DemoLectureUI(course, lecture_date, [demo_memo(course, lecture_date, duration)])
+    with ui:
+        lectures = choose_action(ui)
+        ui.menu = ""
+        for lecture in lectures:
+            animate_lecture(ui, *lecture)
+
+
+if __name__ == "__main__":
+    main()

@@ -193,6 +193,7 @@ class LectureUI:
         ]
 
         spinner = SPINNER_FRAMES[self.frame % len(SPINNER_FRAMES)]
+        part_label = "part" if len(self.memos) == 1 else "parts"
         for memo in self.memos:
             if memo.status == "complete":
                 lines.append(
@@ -231,14 +232,14 @@ class LectureUI:
             part_names = " + ".join(f"pt{memo.part}" for memo in self.memos)
             lines.extend(
                 [
-                    f"  {ACCENT}{spinner}{RESET}  {WHITE}Combining {len(self.memos)} parts{RESET}",
+                    f"  {ACCENT}{spinner}{RESET}  {WHITE}Combining {len(self.memos)} {part_label}{RESET}",
                     f"     {MUTED}{part_names}  →  {self.date}.txt{RESET}",
                 ]
             )
         elif self.combine_status == "complete" and self.combined_path:
             lines.extend(
                 [
-                    f"  {GREEN}✓{RESET}  {WHITE}Combined {len(self.memos)} parts{RESET}",
+                    f"  {GREEN}✓{RESET}  {WHITE}Combined {len(self.memos)} {part_label}{RESET}",
                     f"     {BOLD}{gradient(str(self.combined_path.relative_to(SEMESTER_DIR)))}{RESET}",
                 ]
             )
