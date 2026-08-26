@@ -1,0 +1,27 @@
+{
+  "source": "~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings",
+  "root": "~/School/senior/fall",
+  "timezone": "America/Los_Angeles",
+  "model": "mlx-community/whisper-large-v3-turbo",
+  "theme": "pumpkin-spice",
+  "semester": {
+    "start": "2026-08-24",
+    "end": "2026-12-18"
+  },
+  "courses": [
+    {
+      "name": "MATH351",
+      "prompt": "University lecture for MATH 351 Applied Combinatorics. Use mathematical terminology, especially graph theory and combinatorics vocabulary.",
+      "meetings": [
+        {"days": ["Tuesday", "Thursday"], "start": "11:30", "end": "12:45"}
+      ]
+    },
+    {
+      "name": "MATH451",
+      "prompt": "University lecture for MATH 451 Mathematical Logic. Use mathematical terminology and preserve symbolic logic vocabulary.",
+      "meetings": [
+        {"days": ["Tuesday", "Thursday"], "start": "14:30", "end": "15:45"}
+      ]
+    }
+  ]
+}
