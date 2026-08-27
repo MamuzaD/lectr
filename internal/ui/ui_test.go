@@ -79,11 +79,11 @@ func TestDividerHandlesSmallWidths(t *testing.T) {
 	}
 }
 
-func TestLogoUsesFutureLECTRWordmark(t *testing.T) {
+func TestLogoUsesLECTRWordmark(t *testing.T) {
 	logo := stripANSI(Logo())
-	for _, line := range []string{"╻  ┏━╸┏━╸╺┳╸┏━┓", "┃  ┣╸ ┃   ┃ ┣┳┛", "┗━╸┗━╸┗━╸ ╹ ╹┗╸"} {
+	for _, line := range []string{"▜     ▗   ", "▐ █▌▛▘▜▘▛▘", "▐▖▙▖▙▖▐▖▌ "} {
 		if !strings.Contains(logo, line) {
-			t.Fatalf("future logo missing %q:\n%s", line, logo)
+			t.Fatalf("logo missing %q:\n%s", line, logo)
 		}
 	}
 }
@@ -117,7 +117,7 @@ func TestHelpUsesSharedLogoAndCommandLayout(t *testing.T) {
 		"Local lectures.", "lectr <command>", "/tmp/config.json",
 		[]Command{{Name: "transcribe", Description: "Transcribe recordings"}},
 	))
-	for _, value := range []string{"╻  ┏━╸┏━╸╺┳╸┏━┓", "Local lectures.", "lectr <command>", "transcribe", "/tmp/config.json"} {
+	for _, value := range []string{"▜     ▗   ", "Local lectures.", "lectr <command>", "transcribe", "/tmp/config.json"} {
 		if !strings.Contains(view, value) {
 			t.Fatalf("help missing %q:\n%s", value, view)
 		}
@@ -130,7 +130,7 @@ func TestCommandHelpUsesFocusedSection(t *testing.T) {
 		[]Command{{Name: "install", Description: "Install watcher"}},
 		"/tmp/config.json", "Bare watch shows status.",
 	))
-	for _, value := range []string{"╻  ┏━╸┏━╸╺┳╸┏━┓", "Manage watcher.", "lectr watch [ACTION]", "Actions", "install", "Bare watch shows status.", "/tmp/config.json"} {
+	for _, value := range []string{"▜     ▗   ", "Manage watcher.", "lectr watch [ACTION]", "Actions", "install", "Bare watch shows status.", "/tmp/config.json"} {
 		if !strings.Contains(view, value) {
 			t.Fatalf("command help missing %q:\n%s", value, view)
 		}

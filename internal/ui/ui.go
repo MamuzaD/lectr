@@ -13,15 +13,16 @@ import (
 )
 
 var (
-	Orange color.Color
-	Amber  color.Color
-	Brown  color.Color
-	Green  color.Color
-	Muted  color.Color
-	Dim    color.Color
-	White  color.Color
-	Red    color.Color
-	stops  [3]string
+	Orange       color.Color
+	Amber        color.Color
+	Brown        color.Color
+	Green        color.Color
+	Muted        color.Color
+	Dim          color.Color
+	White        color.Color
+	Red          color.Color
+	stops        [3]string
+	verticalLogo bool
 )
 
 type Theme struct {
@@ -29,6 +30,7 @@ type Theme struct {
 	Accent, Highlight, Deep string
 	Success, Muted, Dim     string
 	Text, Error             string
+	VerticalLogo            bool
 }
 
 var themes = map[string]Theme{
@@ -39,6 +41,7 @@ var themes = map[string]Theme{
 	"enchanting-table": {
 		Name: "enchanting-table", Accent: "#55FFFF", Highlight: "#FF55FF", Deep: "#3B1C59",
 		Success: "#55FFAA", Muted: "#A89BC2", Dim: "#554568", Text: "#F2ECFF", Error: "#FF5555",
+		VerticalLogo: true,
 	},
 }
 
@@ -53,6 +56,7 @@ func UseTheme(name string) error {
 	Green, Muted, Dim = lipgloss.Color(theme.Success), lipgloss.Color(theme.Muted), lipgloss.Color(theme.Dim)
 	White, Red = lipgloss.Color(theme.Text), lipgloss.Color(theme.Error)
 	stops = [3]string{theme.Deep, theme.Accent, theme.Highlight}
+	verticalLogo = theme.VerticalLogo
 	return nil
 }
 
@@ -209,12 +213,36 @@ func NewProgress() progress.Model {
 
 func Logo() string {
 	lines := []string{
-		"╻  ┏━╸┏━╸╺┳╸┏━┓",
-		"┃  ┣╸ ┃   ┃ ┣┳┛",
-		"┗━╸┗━╸┗━╸ ╹ ╹┗╸",
+		"▜     ▗   ",
+		"▐ █▌▛▘▜▘▛▘",
+		"▐▖▙▖▙▖▐▖▌ ",
 	}
+	if !verticalLogo {
+		for index, line := range lines {
+			lines[index] = Gradient(line)
+		}
+		return strings.Join(lines, "\n")
+	}
+	total := 0
+	for _, line := range lines {
+		total += len([]rune(line))
+	}
+	seen := 0
 	for index, line := range lines {
-		lines[index] = Gradient(line)
+		runes := []rune(line)
+		var output strings.Builder
+		for _, char := range runes {
+			position := float64(seen) / float64(total-1)
+			segment := position * float64(len(stops)-1)
+			left := int(segment)
+			if left >= len(stops)-1 {
+				left, segment = len(stops)-2, float64(len(stops)-1)
+			}
+			color := blend(stops[left], stops[left+1], segment-float64(left))
+			output.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(string(char)))
+			seen++
+		}
+		lines[index] = output.String()
 	}
 	return strings.Join(lines, "\n")
 }
