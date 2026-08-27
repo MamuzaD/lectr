@@ -1,16 +1,23 @@
 package app
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"os"
+	"time"
 
+	"github.com/charmbracelet/x/term"
 	"github.com/mamuzad/lectr/internal/config"
 	"github.com/mamuzad/lectr/internal/transcribe"
 	"github.com/mamuzad/lectr/internal/ui"
 	"github.com/mamuzad/lectr/internal/watch"
 )
+
+const permissionExitCode = 77
 
 func runConfigFreeWatch(configPath string, arguments []string) (bool, error) {
 	if len(arguments) == 0 {
@@ -58,10 +65,50 @@ func runWatch(settings config.Config, arguments []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println(ui.SuccessLine("Installed and started."))
+	state := watch.WaitForInitialScan(5 * time.Second)
+	if state.HasLastExit && state.LastExitCode == permissionExitCode {
+		executable, pathErr := watch.ExecutablePath()
+		if pathErr != nil {
+			return pathErr
+		}
+		fmt.Println(ui.ErrorLine("The watcher cannot read Apple Voice Memos."))
+		fmt.Println(ui.MutedText("Open System Settings → Privacy & Security → Full Disk Access."))
+		fmt.Println(ui.MutedText("Add this executable: ") + ui.Gradient(executable))
+		if !term.IsTerminal(os.Stdin.Fd()) {
+			return errors.New("grant Full Disk Access, then run `lectr watch install` again")
+		}
+		fmt.Print("\nGrant access, then press Enter to retry: ")
+		if _, readErr := bufio.NewReader(os.Stdin).ReadString('\n'); readErr != nil && !errors.Is(readErr, io.EOF) {
+			return readErr
+		}
+		previousRuns := state.Runs
+		if err := watch.RetryWatcher(); err != nil {
+			return err
+		}
+		state = watch.WaitForWatcherRun(previousRuns, 5*time.Second)
+		if watcherRetryInProgress(state, previousRuns) {
+			fmt.Println(ui.NeutralLine("Retry started; the initial scan is still running."))
+			fmt.Println(ui.MutedText("Run `lectr watch status` in a moment to see the result."))
+		} else if !state.HasLastExit || state.LastExitCode != 0 {
+			return errors.New("the watcher still cannot read Voice Memos; verify Full Disk Access and try again")
+		} else {
+			fmt.Println(ui.SuccessLine("Access confirmed. Installed and started."))
+		}
+	} else if state.HasLastExit && state.LastExitCode != 0 {
+		return fmt.Errorf("initial watcher scan failed (exit code %d); see %s", state.LastExitCode, log)
+	} else if !state.HasLastExit {
+		fmt.Println(ui.NeutralLine("Installed; the initial scan is still running."))
+		fmt.Println(ui.MutedText("Run `lectr watch status` in a moment to see the result."))
+	} else {
+		fmt.Println(ui.SuccessLine("Installed and started."))
+	}
 	fmt.Println(ui.MutedText("Watching  ") + ui.Gradient(watching))
 	fmt.Println(ui.MutedText("Log       ") + ui.Gradient(log))
 	return nil
+}
+
+func watcherRetryInProgress(state watch.WatcherState, previousRuns int) bool {
+	return state.Enabled && state.Running && state.Runs > previousRuns
 }
 
 func printWatcherStatus(configPath string) error {
@@ -123,6 +170,13 @@ func watcherStatusLines(state watch.WatcherState, settings config.Config, pendin
 }
 
 func watcherStateLines(state watch.WatcherState) []string {
+	if state.Enabled && state.HasLastExit && state.LastExitCode != 0 {
+		return []string{
+			ui.ErrorLine(fmt.Sprintf("Installed, but the last scan failed (exit code %d).", state.LastExitCode)),
+			ui.MutedText("If Voice Memos access was denied, run `lectr watch install` to repair it."),
+			"",
+		}
+	}
 	if state.Enabled {
 		return []string{ui.SuccessLine("Enabled and watching for Voice Memos"), ""}
 	}

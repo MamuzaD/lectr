@@ -57,6 +57,31 @@ func TestWatcherStatusLinesDescribeTheWholeWorkflow(t *testing.T) {
 	}
 }
 
+func TestWatcherStatusLinesReportFailedScan(t *testing.T) {
+	settings := loadTestConfig(t)
+	state := watch.WatcherState{Enabled: true, HasLastExit: true, LastExitCode: 1}
+	view := strings.Join(watcherStatusLines(state, settings, 0), "\n")
+	for _, want := range []string{"last scan failed", "watch install", "repair"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("failed watcher status missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestWatcherRetryInProgressIgnoresStaleExitCode(t *testing.T) {
+	state := watch.WatcherState{
+		Enabled: true, Running: true, Runs: 2,
+		HasLastExit: true, LastExitCode: permissionExitCode,
+	}
+	if !watcherRetryInProgress(state, 1) {
+		t.Fatal("active retry should remain in progress despite the previous permission exit code")
+	}
+	state.Running = false
+	if watcherRetryInProgress(state, 1) {
+		t.Fatal("finished retry should not remain in progress")
+	}
+}
+
 func TestDemoDoesNotRequireConfig(t *testing.T) {
 	err := run(context.Background(), []string{"demo", "unknown", "--config", filepath.Join(t.TempDir(), "missing.json")})
 	if err == nil || !strings.Contains(err.Error(), "unknown demo") {

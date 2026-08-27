@@ -10,6 +10,7 @@ import (
 var publicCommands = []ui.Command{
 	{Name: "transcribe", Description: "Transcribe pending recordings"},
 	{Name: "watch", Description: "Manage automatic Voice Memo routing"},
+	{Name: "status", Description: "Show configuration and watcher status"},
 	{Name: "configure", Description: "Configure lectr interactively"},
 	{Name: "help", Description: "Show this help"},
 	{Name: "completion", Description: "Print zsh or bash completion"},
@@ -121,8 +122,10 @@ func commandUsage(command, configPath string) (string, error) {
 		return ui.CommandHelp(
 			"Show configured paths, backlog counts, dependencies, and watcher state.",
 			"lectr status [--config PATH]",
-			"", nil, path,
-			"This is a hidden diagnostic command.",
+			"Options",
+			[]ui.Command{{Name: "--config PATH", Description: "Use another config file"}},
+			path,
+			"Use this to verify the active configuration and watcher installation.",
 		), nil
 	case "demo":
 		return ui.CommandHelp(

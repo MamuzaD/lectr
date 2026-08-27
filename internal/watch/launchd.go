@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const LaunchAgentLabel = "local.lectr.route"
@@ -122,6 +123,15 @@ func stableExecutable() (string, error) {
 	return validateStableExecutable(executable)
 }
 
+func ExecutablePath() (string, error) {
+	return stableExecutable()
+}
+
+func RetryWatcher() error {
+	uid := fmt.Sprintf("gui/%d", os.Getuid())
+	return runLaunchctl("kickstart", "-k", uid+"/"+LaunchAgentLabel)
+}
+
 func validateStableExecutable(executable string) (string, error) {
 	info, err := os.Stat(executable)
 	if err != nil {
@@ -150,13 +160,61 @@ func UninstallWatcher() error {
 }
 
 type WatcherState struct {
-	Enabled   bool
-	AgentPath string
-	LogPath   string
+	Enabled      bool
+	Running      bool
+	Runs         int
+	LastExitCode int
+	HasLastExit  bool
+	AgentPath    string
+	LogPath      string
 }
 
 func WatcherStatus() WatcherState {
-	return watcherStatus(runLaunchctl)
+	state := watcherStatus(runLaunchctl)
+	output, err := exec.Command("launchctl", "print", fmt.Sprintf("gui/%d/%s", os.Getuid(), LaunchAgentLabel)).CombinedOutput()
+	if err == nil {
+		for _, line := range strings.Split(string(output), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "state = running" {
+				state.Running = true
+			}
+			if strings.HasPrefix(trimmed, "runs = ") {
+				_, _ = fmt.Sscanf(trimmed, "runs = %d", &state.Runs)
+			}
+			if strings.Contains(trimmed, "last exit code = ") {
+				var code int
+				if _, scanErr := fmt.Sscanf(trimmed, "last exit code = %d", &code); scanErr == nil {
+					state.LastExitCode = code
+					state.HasLastExit = true
+				}
+			}
+		}
+	}
+	return state
+}
+
+// WaitForInitialScan lets the installing CLI report the result of launchd's
+// first route attempt instead of racing it and claiming success too early.
+func WaitForInitialScan(timeout time.Duration) WatcherState {
+	deadline := time.Now().Add(timeout)
+	for {
+		state := WatcherStatus()
+		if !state.Enabled || (state.HasLastExit && !state.Running) || !time.Now().Before(deadline) {
+			return state
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func WaitForWatcherRun(previousRuns int, timeout time.Duration) WatcherState {
+	deadline := time.Now().Add(timeout)
+	for {
+		state := WatcherStatus()
+		if !state.Enabled || (state.Runs > previousRuns && state.HasLastExit && !state.Running) || !time.Now().Before(deadline) {
+			return state
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 func watcherStatus(launchctl launchctlCommand) WatcherState {

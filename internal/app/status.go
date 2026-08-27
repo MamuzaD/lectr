@@ -26,6 +26,11 @@ func printStatus(settings config.Config) error {
 		}
 		lines = append(lines, fmt.Sprintf("%-10s %d recordings  ·  %d awaiting transcription", course.Name, counts.Recordings, counts.Pending))
 	}
+	if sourceCount, err := watch.SourceInventory(settings.Source); err != nil {
+		lines = append(lines, "", ui.ErrorLine("Source    ")+err.Error())
+	} else {
+		lines = append(lines, "", ui.MutedText("Source    ")+fmt.Sprintf("%d Voice Memos visible to this process", sourceCount))
+	}
 	watcherState := watch.WatcherStatus()
 	watcher := "not installed"
 	if watcherState.Enabled {

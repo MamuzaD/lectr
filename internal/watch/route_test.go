@@ -204,6 +204,17 @@ func TestRouteDeduplicatesUUIDsAndNumbersParts(t *testing.T) {
 	}
 }
 
+func TestRoutePreservesSourceStatErrors(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing", "Recordings")
+	_, err := routeRecordings(context.Background(), Options{Root: t.TempDir(), Source: missing})
+	if err == nil {
+		t.Fatal("expected missing source error")
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("source error does not preserve os.ErrNotExist: %v", err)
+	}
+}
+
 func TestLaunchAgentConfigEmbedsAbsoluteConfigAndSource(t *testing.T) {
 	directory := t.TempDir()
 	configPath := filepath.Join(directory, "config.json")
@@ -216,6 +227,11 @@ func TestLaunchAgentConfigEmbedsAbsoluteConfigAndSource(t *testing.T) {
 	arguments := "<string>" + executable + "</string><string>route</string><string>--config</string><string>" + configPath + "</string><string>--quiet</string>"
 	if !strings.Contains(config, arguments) || !strings.Contains(config, source) {
 		t.Fatalf("launch config does not embed config and source: %s", config)
+	}
+	for _, unexpected := range []string{"<key>KeepAlive</key>", "<key>ThrottleInterval</key>"} {
+		if strings.Contains(config, unexpected) {
+			t.Fatalf("launch config contains persistent retry setting %q: %s", unexpected, config)
+		}
 	}
 	decoder := xml.NewDecoder(strings.NewReader(config))
 	for {

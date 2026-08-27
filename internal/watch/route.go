@@ -64,14 +64,17 @@ func routeRecordings(ctx context.Context, options Options) (int, error) {
 		return 0, errors.New("Voice Memos directory is unavailable")
 	}
 	info, err := os.Stat(options.Source)
-	if err != nil || !info.IsDir() {
+	if err != nil {
+		return 0, fmt.Errorf("cannot access Voice Memos directory %s: %w", options.Source, err)
+	}
+	if !info.IsDir() {
 		return 0, fmt.Errorf("Voice Memos directory not found: %s", options.Source)
 	}
 	known, err := existingUUIDs(ctx, options)
 	if err != nil {
 		return 0, err
 	}
-	paths, err := filepath.Glob(filepath.Join(options.Source, "*.m4a"))
+	paths, err := sourceRecordingPaths(options.Source)
 	if err != nil {
 		return 0, err
 	}
@@ -118,6 +121,33 @@ func routeRecordings(ctx context.Context, options Options) (int, error) {
 		fmt.Println("No new class recordings found.")
 	}
 	return copied, nil
+}
+
+// SourceInventory deliberately uses ReadDir instead of filepath.Glob. Glob
+// suppresses directory read errors, which made a launchd privacy failure look
+// exactly like an empty Voice Memos folder.
+func SourceInventory(source string) (int, error) {
+	paths, err := sourceRecordingPaths(source)
+	if err != nil {
+		return 0, err
+	}
+	return len(paths), nil
+}
+
+func sourceRecordingPaths(source string) ([]string, error) {
+	entries, err := os.ReadDir(source)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read Voice Memos directory %s: %w", source, err)
+	}
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".m4a") {
+			continue
+		}
+		paths = append(paths, filepath.Join(source, entry.Name()))
+	}
+	sort.Strings(paths)
+	return paths, nil
 }
 
 func ffprobePath() (string, error) {

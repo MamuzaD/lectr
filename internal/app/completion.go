@@ -48,6 +48,7 @@ _lectr() {
       case $line[1] in
         transcribe) _arguments '--config[use another config file]:path:_files' '--force[replace existing part transcripts]' '--dry-run[preview without changing files]' '1:course or date:' '2:date or memo:' ;;
         watch) _arguments '--config[use another config file]:path:_files' '1:action:(install uninstall status)' ;;
+        status) _arguments '--config[use another config file]:path:_files' ;;
         configure) _arguments '--config[use another config file]:path:_files' ;;
         completion) _values 'shell' zsh bash ;;
         help) _values -V 'command' %s ;;
@@ -74,6 +75,7 @@ compdef _lectr lectr
   fi
   case $command in
     watch) COMPREPLY=( $(compgen -W '--config install uninstall status' -- "$current") ) ;;
+    status) COMPREPLY=( $(compgen -W '--config' -- "$current") ) ;;
     configure) COMPREPLY=( $(compgen -W '--config' -- "$current") ) ;;
     completion) COMPREPLY=( $(compgen -W 'zsh bash' -- "$current") ) ;;
     transcribe) COMPREPLY=( $(compgen -W '--config --force --dry-run' -- "$current") ) ;;

@@ -24,6 +24,9 @@ func Run(ctx context.Context, arguments []string) int {
 			return 130
 		}
 		fmt.Fprint(os.Stderr, ui.Page("Something went wrong", ui.ErrorLine(err.Error()), ui.MutedText("Run lectr help to see available commands.")))
+		if errors.Is(err, os.ErrPermission) {
+			return permissionExitCode
+		}
 		return 1
 	}
 	return 0
