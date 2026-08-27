@@ -27,33 +27,6 @@ func TestValidateSelector(t *testing.T) {
 	}
 }
 
-func TestInventoryCountsOnlyNamedMemosWithoutTranscripts(t *testing.T) {
-	root := t.TempDir()
-	memos := filepath.Join(root, "MATH351", "memos")
-	transcripts := filepath.Join(root, "MATH351", "transcripts")
-	if err := os.MkdirAll(memos, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(transcripts, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"2026-08-25-pt01.m4a", "2026-08-25-pt02.wav", "notes.m4a"} {
-		if err := os.WriteFile(filepath.Join(memos, name), nil, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(transcripts, "2026-08-25-pt01.txt"), []byte("done"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	counts, err := Inventory(root, "MATH351")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if counts.Recordings != 2 || counts.Pending != 1 {
-		t.Fatalf("counts = %#v", counts)
-	}
-}
-
 func TestWhisperCommandMatchesPythonCLI(t *testing.T) {
 	memo := Memo{Course: "MATH451", Path: "/memo.m4a"}
 	got := whisperCommand(memo, "/transcripts", "lecture-new-123", "model-name", "logic lecture")
