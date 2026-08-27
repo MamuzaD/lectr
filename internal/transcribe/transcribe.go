@@ -163,7 +163,33 @@ func Run(ctx context.Context, options Options) error {
 			return err
 		}
 	}
+	if !options.Force {
+		groups = pendingGroups(groups)
+	}
+	if len(groups) == 0 {
+		fmt.Print(ui.Page("Nothing to transcribe", ui.NeutralLine("Every recording is already transcribed.")))
+		return nil
+	}
 	return runGroups(ctx, groups, options)
+}
+
+// pendingGroups drops groups whose memos were all already transcribed on a
+// previous run, so today's queue only shows what actually runs today.
+func pendingGroups(values []group) []group {
+	pending := make([]group, 0, len(values))
+	for _, value := range values {
+		hasPending := false
+		for _, memo := range value.Memos {
+			if memo.Status != skipped {
+				hasPending = true
+				break
+			}
+		}
+		if hasPending {
+			pending = append(pending, value)
+		}
+	}
+	return pending
 }
 
 func discoverGroups(options Options) ([]group, error) {

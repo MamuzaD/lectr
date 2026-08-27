@@ -27,6 +27,21 @@ func TestValidateSelector(t *testing.T) {
 	}
 }
 
+func TestPendingGroupsDropsFullyTranscribedDates(t *testing.T) {
+	values := []group{
+		{Course: "MATH351", Date: "2026-08-24", Memos: []Memo{{Part: "01", Status: skipped}}},
+		{Course: "MATH351", Date: "2026-08-25", Memos: []Memo{{Part: "01", Status: skipped}, {Part: "02", Status: waiting}}},
+		{Course: "MATH451", Date: "2026-08-26", Memos: []Memo{{Part: "01", Status: waiting}}},
+	}
+	pending := pendingGroups(values)
+	if len(pending) != 2 {
+		t.Fatalf("expected 2 pending groups, got %d: %+v", len(pending), pending)
+	}
+	if pending[0].Date != "2026-08-25" || pending[1].Date != "2026-08-26" {
+		t.Fatalf("unexpected pending groups: %+v", pending)
+	}
+}
+
 func TestInventoryCountsOnlyNamedMemosWithoutTranscripts(t *testing.T) {
 	root := t.TempDir()
 	memos := filepath.Join(root, "MATH351", "memos")
