@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build release binary
+        run: make release
+
+      - name: Upload release binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: lectr-darwin-arm64
+          path: bin/lectr-darwin-arm64
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release binary
+        uses: actions/download-artifact@v8
+        with:
+          name: lectr-darwin-arm64
+          path: bin
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: bin/lectr-darwin-arm64
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

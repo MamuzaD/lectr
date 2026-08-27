@@ -13,6 +13,8 @@
 # Common build/output directories
 bin/
 build/
+/assets/
+/tapes/
 
 # Operating System specific files
 .DS_Store
