@@ -2,4 +2,4 @@
 
 > Work in progress.
 
-A small local-first CLI for turning class recordings into transcripts.
+A small, local-only macOS CLI for routing Apple Voice Memos into course folders and transcribing them with MLX Whisper.
