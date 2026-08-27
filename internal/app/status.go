@@ -26,10 +26,10 @@ func printStatus(settings config.Config) error {
 		}
 		lines = append(lines, fmt.Sprintf("%-10s %d recordings  ·  %d awaiting transcription", course.Name, counts.Recordings, counts.Pending))
 	}
-	installed, _ := watch.WatcherStatus()
+	watcherState := watch.WatcherStatus()
 	watcher := "not installed"
-	if installed {
-		watcher = "installed"
+	if watcherState.Enabled {
+		watcher = "enabled"
 	}
 	whisper := dependencyStatus("mlx_whisper")
 	ffprobe := dependencyStatus("ffprobe")

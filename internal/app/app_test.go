@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/mamuzad/lectr/internal/config"
+	"github.com/mamuzad/lectr/internal/ui"
+	"github.com/mamuzad/lectr/internal/watch"
 )
 
 func TestPendingSinceTranscribeCountsUntranscribedMemos(t *testing.T) {
@@ -36,6 +38,22 @@ func TestPendingSinceTranscribeCountsUntranscribedMemos(t *testing.T) {
 	}
 	if pending != 1 {
 		t.Fatalf("pending = %d, want 1", pending)
+	}
+}
+
+func TestWatcherStatusLinesDescribeTheWholeWorkflow(t *testing.T) {
+	settings := loadTestConfig(t)
+	state := watch.WatcherState{Enabled: true, AgentPath: "/tmp/local.lectr.route.plist", LogPath: "/tmp/lectr.log"}
+	view := strings.Join(watcherStatusLines(state, settings, 2), "\n")
+	for _, want := range []string{"Enabled and watching for Voice Memos", "2 recordings awaiting transcription"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("watcher status missing %q:\n%s", want, view)
+		}
+	}
+	for _, path := range []string{settings.Source, settings.Root, settings.Path(), state.AgentPath, state.LogPath} {
+		if !strings.Contains(view, ui.Gradient(path)) {
+			t.Errorf("watcher status missing path %q", path)
+		}
 	}
 }
 

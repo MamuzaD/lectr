@@ -149,12 +149,22 @@ func UninstallWatcher() error {
 	return nil
 }
 
-func WatcherStatus() (bool, string) {
+type WatcherState struct {
+	Enabled   bool
+	AgentPath string
+	LogPath   string
+}
+
+func WatcherStatus() WatcherState {
 	return watcherStatus(runLaunchctl)
 }
 
-func watcherStatus(launchctl launchctlCommand) (bool, string) {
+func watcherStatus(launchctl launchctlCommand) WatcherState {
 	path := launchAgentPath()
 	uid := fmt.Sprintf("gui/%d", os.Getuid())
-	return launchctl("print", uid+"/"+LaunchAgentLabel) == nil, path
+	return WatcherState{
+		Enabled:   launchctl("print", uid+"/"+LaunchAgentLabel) == nil,
+		AgentPath: path,
+		LogPath:   launchLogPath(),
+	}
 }

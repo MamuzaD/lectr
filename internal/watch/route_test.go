@@ -288,14 +288,14 @@ func TestWatcherStatusUsesLoadedLaunchdService(t *testing.T) {
 	if err := os.WriteFile(path, []byte("stale"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	loaded, gotPath := watcherStatus(func(arguments ...string) error {
+	state := watcherStatus(func(arguments ...string) error {
 		if len(arguments) != 2 || arguments[0] != "print" || !strings.HasSuffix(arguments[1], "/"+LaunchAgentLabel) {
 			t.Fatalf("launchctl arguments = %v", arguments)
 		}
 		return errors.New("not loaded")
 	})
-	if loaded || gotPath != path {
-		t.Fatalf("loaded=%v path=%q, want false %q", loaded, gotPath, path)
+	if state.Enabled || state.AgentPath != path || state.LogPath != launchLogPath() {
+		t.Fatalf("state=%+v, want disabled with agent %q", state, path)
 	}
 }
 

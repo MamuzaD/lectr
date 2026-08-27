@@ -65,20 +65,25 @@ func runWatch(settings config.Config, arguments []string) error {
 }
 
 func printWatcherStatus(configPath string) error {
-	installed, path := watch.WatcherStatus()
-	lines := []string{}
-	if installed {
-		lines = append(lines, ui.SuccessLine("Installed"), ui.Gradient(path))
-	} else {
-		lines = append(lines, ui.NeutralLine("Not installed"), ui.MutedText("Run lectr watch install to enable automatic routing."))
+	state := watch.WatcherStatus()
+	settings, err := config.Load(configPath)
+	if err != nil {
+		lines := watcherStateLines(state)
+		lines = append(lines,
+			ui.MutedText("Agent     ")+ui.Gradient(state.AgentPath),
+			ui.MutedText("Log       ")+ui.Gradient(state.LogPath),
+			"",
+			ui.ErrorLine("Config unavailable"),
+			ui.MutedText(err.Error()),
+		)
+		fmt.Print(ui.Page("Watcher", lines...))
+		return nil
 	}
-	if pending, err := pendingSinceTranscribe(configPath); err == nil {
-		message := fmt.Sprintf("%s synced since your last transcribe", recordingCount(pending))
-		if pending == 0 {
-			message = "Nothing synced since your last transcribe"
-		}
-		lines = append(lines, "", ui.MutedText(message))
+	pending, err := pendingForSettings(settings)
+	if err != nil {
+		return err
 	}
+	lines := watcherStatusLines(state, settings, pending)
 	fmt.Print(ui.Page("Watcher", lines...))
 	return nil
 }
@@ -88,6 +93,10 @@ func pendingSinceTranscribe(configPath string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	return pendingForSettings(settings)
+}
+
+func pendingForSettings(settings config.Config) (int, error) {
 	total := 0
 	for _, course := range settings.Courses {
 		counts, err := transcribe.Inventory(settings.Root, course.Name)
@@ -97,6 +106,34 @@ func pendingSinceTranscribe(configPath string) (int, error) {
 		total += counts.Pending
 	}
 	return total, nil
+}
+
+func watcherStatusLines(state watch.WatcherState, settings config.Config, pending int) []string {
+	lines := watcherStateLines(state)
+	lines = append(lines,
+		ui.MutedText("Watching  ")+ui.Gradient(settings.Source),
+		ui.MutedText("Routing   ")+ui.Gradient(settings.Root),
+		ui.MutedText("Config    ")+ui.Gradient(settings.Path()),
+		ui.MutedText("Agent     ")+ui.Gradient(state.AgentPath),
+		ui.MutedText("Log       ")+ui.Gradient(state.LogPath),
+		"",
+		ui.MutedText("Backlog   ")+backlogMessage(pending),
+	)
+	return lines
+}
+
+func watcherStateLines(state watch.WatcherState) []string {
+	if state.Enabled {
+		return []string{ui.SuccessLine("Enabled and watching for Voice Memos"), ""}
+	}
+	return []string{ui.NeutralLine("Disabled"), ui.MutedText("Run lectr watch install to enable automatic routing."), ""}
+}
+
+func backlogMessage(count int) string {
+	if count == 0 {
+		return "No recordings awaiting transcription"
+	}
+	return fmt.Sprintf("%s awaiting transcription", recordingCount(count))
 }
 
 func recordingCount(count int) string {
