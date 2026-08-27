@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"os"
@@ -35,6 +35,16 @@ func TestCompletionScriptsCoverPublicCommands(t *testing.T) {
 	}
 	if _, err := completionScript("fish"); err == nil {
 		t.Fatal("unsupported shell was accepted")
+	}
+}
+
+func TestZshCompletionRegistersLectr(t *testing.T) {
+	script, err := completionScript("zsh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(script, "compdef _lectr lectr") {
+		t.Fatal("zsh completion does not register _lectr for lectr")
 	}
 }
 

@@ -43,6 +43,11 @@ type Options struct {
 	DryRun   bool
 }
 
+type Counts struct {
+	Recordings int
+	Pending    int
+}
+
 type memoStatus = ui.Status
 
 const (
@@ -87,6 +92,30 @@ type event struct {
 
 func ValidateSelector(value string) bool {
 	return value == "" || selectorPattern.MatchString(value)
+}
+
+func Inventory(root, course string) (Counts, error) {
+	entries, err := os.ReadDir(filepath.Join(root, course, "memos"))
+	if os.IsNotExist(err) {
+		return Counts{}, nil
+	}
+	if err != nil {
+		return Counts{}, err
+	}
+	var counts Counts
+	for _, entry := range entries {
+		if entry.IsDir() || !memoPattern.MatchString(entry.Name()) {
+			continue
+		}
+		counts.Recordings++
+		stem := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+		if _, err := os.Stat(filepath.Join(root, course, "transcripts", stem+".txt")); os.IsNotExist(err) {
+			counts.Pending++
+		} else if err != nil {
+			return Counts{}, err
+		}
+	}
+	return counts, nil
 }
 
 func Run(ctx context.Context, options Options) error {
