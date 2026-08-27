@@ -11,12 +11,12 @@ var publicCommands = []ui.Command{
 	{Name: "transcribe", Description: "Transcribe pending recordings"},
 	{Name: "watch", Description: "Manage automatic Voice Memo routing"},
 	{Name: "configure", Description: "Configure lectr interactively"},
-	{Name: "completion", Description: "Print zsh or bash completion"},
 	{Name: "help", Description: "Show this help"},
+	{Name: "completion", Description: "Print zsh or bash completion"},
 }
 
 func isKnownCommand(name string) bool {
-	if contains([]string{"route", "status"}, name) {
+	if contains([]string{"route", "status", "demo"}, name) {
 		return true
 	}
 	for _, command := range publicCommands {
@@ -34,7 +34,7 @@ func printUsage(configPath string) {
 	}
 	fmt.Print(ui.Help(
 		"Route and transcribe lecture recordings locally on this Mac.",
-		"lectr [--config PATH] <command> [options]",
+		"lectr <command> [--config PATH] [options]",
 		path,
 		publicCommands,
 	))
@@ -58,7 +58,7 @@ func commandUsage(command, configPath string) (string, error) {
 	case "transcribe":
 		return ui.CommandHelp(
 			"Transcribe pending lecture recordings locally with MLX Whisper.",
-			"lectr [--config PATH] transcribe [--force] [--dry-run] [COURSE] [DATE|MEMO]",
+			"lectr transcribe [--config PATH] [--force] [--dry-run] [COURSE] [DATE|MEMO]",
 			"Options",
 			[]ui.Command{
 				{Name: "--force", Description: "Replace existing part transcripts"},
@@ -72,7 +72,7 @@ func commandUsage(command, configPath string) (string, error) {
 	case "watch":
 		return ui.CommandHelp(
 			"Manage the optional launchd watcher for synced Apple Voice Memos.",
-			"lectr [--config PATH] watch [install|uninstall|status]",
+			"lectr watch [--config PATH] [install|uninstall|status]",
 			"Actions",
 			[]ui.Command{
 				{Name: "install", Description: "Install and start the watcher"},
@@ -86,7 +86,7 @@ func commandUsage(command, configPath string) (string, error) {
 	case "configure":
 		return ui.CommandHelp(
 			"Interactively configure storage, semester dates, courses, and schedules.",
-			"lectr [--config PATH] configure",
+			"lectr configure [--config PATH]",
 			"Options",
 			[]ui.Command{{Name: "--config PATH", Description: "Configure another file"}},
 			path,
@@ -108,7 +108,7 @@ func commandUsage(command, configPath string) (string, error) {
 	case "route":
 		return ui.CommandHelp(
 			"Route synced Voice Memos into configured course folders.",
-			"lectr [--config PATH] route [--dry-run] [--quiet]",
+			"lectr route [--config PATH] [--dry-run] [--quiet]",
 			"Options",
 			[]ui.Command{
 				{Name: "--dry-run", Description: "Preview copies without writing"},
@@ -120,9 +120,21 @@ func commandUsage(command, configPath string) (string, error) {
 	case "status":
 		return ui.CommandHelp(
 			"Show configured paths, backlog counts, dependencies, and watcher state.",
-			"lectr [--config PATH] status",
+			"lectr status [--config PATH]",
 			"", nil, path,
 			"This is a hidden diagnostic command.",
+		), nil
+	case "demo":
+		return ui.CommandHelp(
+			"Preview the shared terminal UI using fake recording data.",
+			"lectr demo [fall|spring|stress]",
+			"Profiles",
+			[]ui.Command{
+				{Name: "fall", Description: "Two-course fall queue"},
+				{Name: "spring", Description: "Five-course spring queue"},
+				{Name: "stress", Description: "Twenty-recording stress queue"},
+			},
+			"",
 		), nil
 	case "help":
 		return ui.CommandHelp(

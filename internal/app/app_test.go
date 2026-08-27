@@ -1,6 +1,8 @@
 package app
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,6 +12,46 @@ import (
 
 	"github.com/mamuzad/lectr/internal/config"
 )
+
+func TestPendingSinceTranscribeCountsUntranscribedMemos(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "MATH351", "memos"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "MATH351", "memos", "2026-08-25-pt01.m4a"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	contents := fmt.Sprintf(`{
+		"source": %q, "root": %q, "timezone": "America/Los_Angeles",
+		"semester": {"start": "2026-08-24", "end": "2026-12-18"},
+		"courses": [{"name": "MATH351", "meetings": []}]
+	}`, root, root)
+	if err := os.WriteFile(configPath, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := pendingSinceTranscribe(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending != 1 {
+		t.Fatalf("pending = %d, want 1", pending)
+	}
+}
+
+func TestDemoDoesNotRequireConfig(t *testing.T) {
+	err := run(context.Background(), []string{"demo", "unknown", "--config", filepath.Join(t.TempDir(), "missing.json")})
+	if err == nil || !strings.Contains(err.Error(), "unknown demo") {
+		t.Fatalf("demo error = %v", err)
+	}
+}
+
+func TestConfigFlagBeforeCommandIsRejected(t *testing.T) {
+	err := run(context.Background(), []string{"--config", "/tmp/lectr.json", "demo"})
+	if err == nil || !strings.Contains(err.Error(), "--config must come after a command") {
+		t.Fatalf("expected --config before the command to be rejected, got %v", err)
+	}
+}
 
 func TestExtractConfigFlagWorksBeforeOrAfterCommand(t *testing.T) {
 	path, arguments, err := extractConfigFlag([]string{"transcribe", "MATH351", "--config", "/tmp/lectr.json", "--force"})
@@ -53,9 +95,9 @@ func TestEachPublicCommandHasFocusedHelp(t *testing.T) {
 		command string
 		want    []string
 	}{
-		{"transcribe", []string{"lectr [--config PATH] transcribe", "--force", "--dry-run", "YYYY-MM-DD"}},
-		{"watch", []string{"lectr [--config PATH] watch", "install", "uninstall", "~/Library/Logs/lectr.log"}},
-		{"configure", []string{"lectr [--config PATH] configure", "ACCESSIBLE=1", "cancelling writes nothing"}},
+		{"transcribe", []string{"lectr transcribe [--config PATH]", "--force", "--dry-run", "YYYY-MM-DD"}},
+		{"watch", []string{"lectr watch [--config PATH]", "install", "uninstall", "~/Library/Logs/lectr.log"}},
+		{"configure", []string{"lectr configure [--config PATH]", "ACCESSIBLE=1", "cancelling writes nothing"}},
 		{"completion", []string{"lectr completion zsh|bash", "source <(lectr completion zsh)"}},
 	}
 	for _, test := range tests {

@@ -32,39 +32,56 @@ func completionScript(shell string) (string, error) {
 _lectr() {
   local -a commands
   commands=(
-    '--config:Use another config file'
 %s
   )
-  if (( CURRENT == 2 )); then
-    _describe 'command' commands
-    return
-  fi
-  case $words[2] in
-    transcribe) _arguments '--config[use another config file]:path:_files' '--force[replace existing part transcripts]' '--dry-run[preview without changing files]' '1:course or date:' '2:date or memo:' ;;
-    watch) _values 'action' install uninstall status ;;
-    completion) _values 'shell' zsh bash ;;
+  local curcontext="$curcontext" state line
+
+  _arguments -C \
+    '1: :->command' \
+    '*::arg:->args'
+
+  case $state in
+    command)
+      _describe -V 'command' commands
+      ;;
+    args)
+      case $line[1] in
+        transcribe) _arguments '--config[use another config file]:path:_files' '--force[replace existing part transcripts]' '--dry-run[preview without changing files]' '1:course or date:' '2:date or memo:' ;;
+        watch) _arguments '--config[use another config file]:path:_files' '1:action:(install uninstall status)' ;;
+        configure) _arguments '--config[use another config file]:path:_files' ;;
+        completion) _values 'shell' zsh bash ;;
+        help) _values -V 'command' %s ;;
+      esac
+      ;;
   esac
 }
 
 compdef _lectr lectr
-`, strings.Join(zshEntries, "\n")), nil
+`, strings.Join(zshEntries, "\n"), strings.Join(names, " ")), nil
 	case "bash":
 		return fmt.Sprintf(`_lectr_completion() {
-  local current command
+  local current previous command
   current="${COMP_WORDS[COMP_CWORD]}"
+  previous="${COMP_WORDS[COMP_CWORD-1]}"
   command="${COMP_WORDS[1]}"
   if [[ $COMP_CWORD -eq 1 ]]; then
-	COMPREPLY=( $(compgen -W '--config %s' -- "$current") )
-  elif [[ $command == watch ]]; then
-    COMPREPLY=( $(compgen -W 'install uninstall status' -- "$current") )
-  elif [[ $command == completion ]]; then
-    COMPREPLY=( $(compgen -W 'zsh bash' -- "$current") )
-  elif [[ $command == transcribe ]]; then
-    COMPREPLY=( $(compgen -W '--force --dry-run' -- "$current") )
+    COMPREPLY=( $(compgen -W '%s' -- "$current") )
+    return
   fi
+  if [[ $previous == --config ]]; then
+    COMPREPLY=( $(compgen -f -- "$current") )
+    return
+  fi
+  case $command in
+    watch) COMPREPLY=( $(compgen -W '--config install uninstall status' -- "$current") ) ;;
+    configure) COMPREPLY=( $(compgen -W '--config' -- "$current") ) ;;
+    completion) COMPREPLY=( $(compgen -W 'zsh bash' -- "$current") ) ;;
+    transcribe) COMPREPLY=( $(compgen -W '--config --force --dry-run' -- "$current") ) ;;
+    help) COMPREPLY=( $(compgen -W '%s' -- "$current") ) ;;
+  esac
 }
 complete -F _lectr_completion lectr
-`, strings.Join(names, " ")), nil
+`, strings.Join(names, " "), strings.Join(names, " ")), nil
 	default:
 		return "", fmt.Errorf("unsupported shell %q; choose zsh or bash", shell)
 	}

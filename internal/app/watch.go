@@ -7,13 +7,14 @@ import (
 	"fmt"
 
 	"github.com/mamuzad/lectr/internal/config"
+	"github.com/mamuzad/lectr/internal/transcribe"
 	"github.com/mamuzad/lectr/internal/ui"
 	"github.com/mamuzad/lectr/internal/watch"
 )
 
-func runConfigFreeWatch(arguments []string) (bool, error) {
+func runConfigFreeWatch(configPath string, arguments []string) (bool, error) {
 	if len(arguments) == 0 {
-		return true, printWatcherStatus()
+		return true, printWatcherStatus(configPath)
 	}
 	if len(arguments) != 1 {
 		return true, errors.New("usage: lectr watch install|uninstall|status")
@@ -23,7 +24,7 @@ func runConfigFreeWatch(arguments []string) (bool, error) {
 		fmt.Print(ui.Page("Watcher", ui.MutedText("Removing the Voice Memos watcher…")))
 		return true, watch.UninstallWatcher()
 	case "status":
-		return true, printWatcherStatus()
+		return true, printWatcherStatus(configPath)
 	case "install":
 		return false, nil
 	default:
@@ -63,14 +64,46 @@ func runWatch(settings config.Config, arguments []string) error {
 	return nil
 }
 
-func printWatcherStatus() error {
+func printWatcherStatus(configPath string) error {
 	installed, path := watch.WatcherStatus()
+	lines := []string{}
 	if installed {
-		fmt.Print(ui.Page("Watcher", ui.SuccessLine("Installed"), ui.Gradient(path)))
+		lines = append(lines, ui.SuccessLine("Installed"), ui.Gradient(path))
 	} else {
-		fmt.Print(ui.Page("Watcher", ui.NeutralLine("Not installed"), ui.MutedText("Run lectr watch install to enable automatic routing.")))
+		lines = append(lines, ui.NeutralLine("Not installed"), ui.MutedText("Run lectr watch install to enable automatic routing."))
 	}
+	if pending, err := pendingSinceTranscribe(configPath); err == nil {
+		message := fmt.Sprintf("%s synced since your last transcribe", recordingCount(pending))
+		if pending == 0 {
+			message = "Nothing synced since your last transcribe"
+		}
+		lines = append(lines, "", ui.MutedText(message))
+	}
+	fmt.Print(ui.Page("Watcher", lines...))
 	return nil
+}
+
+func pendingSinceTranscribe(configPath string) (int, error) {
+	settings, err := config.Load(configPath)
+	if err != nil {
+		return 0, err
+	}
+	total := 0
+	for _, course := range settings.Courses {
+		counts, err := transcribe.Inventory(settings.Root, course.Name)
+		if err != nil {
+			return 0, err
+		}
+		total += counts.Pending
+	}
+	return total, nil
+}
+
+func recordingCount(count int) string {
+	if count == 1 {
+		return "1 recording"
+	}
+	return fmt.Sprintf("%d recordings", count)
 }
 
 func scheduleFrom(settings config.Config) watch.Schedule {

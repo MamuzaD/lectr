@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/mamuzad/lectr/internal/config"
+	"github.com/mamuzad/lectr/internal/demo"
 	"github.com/mamuzad/lectr/internal/transcribe"
 	"github.com/mamuzad/lectr/internal/ui"
 )
@@ -29,42 +30,60 @@ func Run(ctx context.Context, arguments []string) int {
 }
 
 func run(ctx context.Context, arguments []string) error {
-	configPath, arguments, err := extractConfigFlag(arguments)
+	if len(arguments) == 0 {
+		printUsage("")
+		return nil
+	}
+	command := arguments[0]
+	configPath, rest, err := extractConfigFlag(arguments[1:])
 	if err != nil {
 		return err
 	}
 	useThemeIfConfigured(configPath)
-	if len(arguments) == 0 || arguments[0] == "-h" || arguments[0] == "--help" {
+	if command == "-h" || command == "--help" {
 		printUsage(configPath)
 		return nil
 	}
-	if arguments[0] == "help" {
-		if len(arguments) == 1 {
+	if command == "help" {
+		if len(rest) == 0 {
 			printUsage(configPath)
 			return nil
 		}
-		if len(arguments) != 2 {
+		if len(rest) != 1 {
 			return errors.New("usage: lectr help [COMMAND]")
 		}
-		return printCommandUsage(arguments[1], configPath)
+		return printCommandUsage(rest[0], configPath)
 	}
-	if !isKnownCommand(arguments[0]) {
-		return fmt.Errorf("unknown command %q; run lectr help", arguments[0])
+	if !isKnownCommand(command) {
+		if command == "--config" || strings.HasPrefix(command, "--config=") {
+			return errors.New("--config must come after a command, e.g. lectr transcribe --config PATH")
+		}
+		return fmt.Errorf("unknown command %q; run lectr help", command)
 	}
-	if contains(arguments[1:], "-h") || contains(arguments[1:], "--help") {
-		return printCommandUsage(arguments[0], configPath)
+	if contains(rest, "-h") || contains(rest, "--help") {
+		return printCommandUsage(command, configPath)
 	}
-	if arguments[0] == "configure" {
-		return runConfigure(ctx, configPath, arguments[1:])
+	if command == "configure" {
+		return runConfigure(ctx, configPath, rest)
 	}
-	if arguments[0] == "completion" {
-		return printCompletion(arguments[1:])
+	if command == "completion" {
+		return printCompletion(rest)
 	}
-	if arguments[0] == "status" && len(arguments) != 1 {
+	if command == "demo" {
+		if len(rest) > 1 {
+			return errors.New("usage: lectr demo [fall|spring|stress]")
+		}
+		profile := "fall"
+		if len(rest) == 1 {
+			profile = rest[0]
+		}
+		return demo.Run(profile)
+	}
+	if command == "status" && len(rest) != 0 {
 		return errors.New("usage: lectr status")
 	}
-	if arguments[0] == "watch" {
-		handled, err := runConfigFreeWatch(arguments[1:])
+	if command == "watch" {
+		handled, err := runConfigFreeWatch(configPath, rest)
 		if handled {
 			return err
 		}
@@ -76,13 +95,13 @@ func run(ctx context.Context, arguments []string) error {
 	if err := ui.UseTheme(settings.Theme); err != nil {
 		return err
 	}
-	switch arguments[0] {
+	switch command {
 	case "route":
-		return runRoute(ctx, settings, arguments[1:])
+		return runRoute(ctx, settings, rest)
 	case "transcribe":
-		return runTranscribe(ctx, settings, arguments[1:])
+		return runTranscribe(ctx, settings, rest)
 	case "watch":
-		return runWatch(settings, arguments[1:])
+		return runWatch(settings, rest)
 	case "status":
 		return printStatus(settings)
 	}
