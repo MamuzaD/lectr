@@ -3,6 +3,7 @@ package watch
 import (
 	"context"
 	"encoding/xml"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -212,7 +213,8 @@ func TestLaunchAgentConfigEmbedsAbsoluteConfigAndSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(config, configPath) || !strings.Contains(config, source) || !strings.Contains(config, "<string>route</string>") {
+	arguments := "<string>" + executable + "</string><string>route</string><string>--config</string><string>" + configPath + "</string><string>--quiet</string>"
+	if !strings.Contains(config, arguments) || !strings.Contains(config, source) {
 		t.Fatalf("launch config does not embed config and source: %s", config)
 	}
 	decoder := xml.NewDecoder(strings.NewReader(config))
@@ -223,6 +225,77 @@ func TestLaunchAgentConfigEmbedsAbsoluteConfigAndSource(t *testing.T) {
 			}
 			t.Fatalf("invalid plist XML: %v", err)
 		}
+	}
+}
+
+func TestInstallWatcherRemovesNewPlistWhenBootstrapFails(t *testing.T) {
+	directory := t.TempDir()
+	t.Setenv("HOME", directory)
+	executable := filepath.Join(directory, "lectr")
+	if err := os.WriteFile(executable, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := func(arguments ...string) error {
+		if arguments[0] == "bootstrap" {
+			return errors.New("bootstrap failed")
+		}
+		return nil
+	}
+	if _, _, err := installWatcher(filepath.Join(directory, "config.json"), filepath.Join(directory, "Recordings"), executable, runner); err == nil {
+		t.Fatal("expected bootstrap failure")
+	}
+	if _, err := os.Stat(launchAgentPath()); !os.IsNotExist(err) {
+		t.Fatalf("failed install left plist behind: %v", err)
+	}
+}
+
+func TestInstallWatcherRestoresPreviousPlistWhenKickstartFails(t *testing.T) {
+	directory := t.TempDir()
+	t.Setenv("HOME", directory)
+	path := launchAgentPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("previous"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(directory, "lectr")
+	if err := os.WriteFile(executable, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := func(arguments ...string) error {
+		if arguments[0] == "kickstart" {
+			return errors.New("kickstart failed")
+		}
+		return nil
+	}
+	if _, _, err := installWatcher(filepath.Join(directory, "config.json"), filepath.Join(directory, "Recordings"), executable, runner); err == nil {
+		t.Fatal("expected kickstart failure")
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil || string(contents) != "previous" {
+		t.Fatalf("previous plist = %q, err=%v", contents, err)
+	}
+}
+
+func TestWatcherStatusUsesLoadedLaunchdService(t *testing.T) {
+	directory := t.TempDir()
+	t.Setenv("HOME", directory)
+	path := launchAgentPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, gotPath := watcherStatus(func(arguments ...string) error {
+		if len(arguments) != 2 || arguments[0] != "print" || !strings.HasSuffix(arguments[1], "/"+LaunchAgentLabel) {
+			t.Fatalf("launchctl arguments = %v", arguments)
+		}
+		return errors.New("not loaded")
+	})
+	if loaded || gotPath != path {
+		t.Fatalf("loaded=%v path=%q, want false %q", loaded, gotPath, path)
 	}
 }
 

@@ -41,7 +41,7 @@ func launchAgentConfigFor(configPath, source, executable string) (string, error)
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>%s</string>
-<key>ProgramArguments</key><array><string>%s</string><string>--config</string><string>%s</string><string>route</string><string>--quiet</string></array>
+<key>ProgramArguments</key><array><string>%s</string><string>route</string><string>--config</string><string>%s</string><string>--quiet</string></array>
 <key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
 <key>WatchPaths</key><array><string>%s</string></array><key>RunAtLoad</key><true/>
 <key>ProcessType</key><string>Background</string>
@@ -55,6 +55,24 @@ func InstallWatcher(configPath, source string) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
+	return installWatcher(configPath, source, executable, runLaunchctl)
+}
+
+type launchctlCommand func(...string) error
+
+func runLaunchctl(arguments ...string) error {
+	output, err := exec.Command("launchctl", arguments...).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	detail := strings.TrimSpace(string(output))
+	if detail == "" {
+		return fmt.Errorf("launchctl %s: %w", arguments[0], err)
+	}
+	return fmt.Errorf("launchctl %s: %w: %s", arguments[0], err, detail)
+}
+
+func installWatcher(configPath, source, executable string, launchctl launchctlCommand) (string, string, error) {
 	path := launchAgentPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", "", err
@@ -63,15 +81,30 @@ func InstallWatcher(configPath, source string) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
+	previous, readErr := os.ReadFile(path)
+	hadPrevious := readErr == nil
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return "", "", readErr
+	}
 	if err := os.WriteFile(path, []byte(config), 0o644); err != nil {
 		return "", "", err
 	}
+	rollback := func() {
+		if hadPrevious {
+			_ = os.WriteFile(path, previous, 0o644)
+			return
+		}
+		_ = os.Remove(path)
+	}
 	uid := fmt.Sprintf("gui/%d", os.Getuid())
-	_ = exec.Command("launchctl", "bootout", uid, path).Run()
-	if err := exec.Command("launchctl", "bootstrap", uid, path).Run(); err != nil {
+	_ = launchctl("bootout", uid, path)
+	if err := launchctl("bootstrap", uid, path); err != nil {
+		rollback()
 		return "", "", err
 	}
-	if err := exec.Command("launchctl", "kickstart", uid+"/"+LaunchAgentLabel).Run(); err != nil {
+	if err := launchctl("kickstart", uid+"/"+LaunchAgentLabel); err != nil {
+		_ = launchctl("bootout", uid, path)
+		rollback()
 		return "", "", err
 	}
 	return source, launchLogPath(), nil
@@ -108,7 +141,7 @@ func validateStableExecutable(executable string) (string, error) {
 func UninstallWatcher() error {
 	path := launchAgentPath()
 	uid := fmt.Sprintf("gui/%d", os.Getuid())
-	_ = exec.Command("launchctl", "bootout", uid, path).Run()
+	_ = runLaunchctl("bootout", uid, path)
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return err
 	}
@@ -117,7 +150,11 @@ func UninstallWatcher() error {
 }
 
 func WatcherStatus() (bool, string) {
+	return watcherStatus(runLaunchctl)
+}
+
+func watcherStatus(launchctl launchctlCommand) (bool, string) {
 	path := launchAgentPath()
-	_, err := os.Stat(path)
-	return err == nil, path
+	uid := fmt.Sprintf("gui/%d", os.Getuid())
+	return launchctl("print", uid+"/"+LaunchAgentLabel) == nil, path
 }
