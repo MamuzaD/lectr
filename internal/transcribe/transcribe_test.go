@@ -3,6 +3,7 @@ package transcribe
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -158,6 +159,16 @@ func TestTranscriptPassesQualityCheck(t *testing.T) {
 	if err != nil || passes {
 		t.Fatalf("loop transcript: passes=%v err=%v", passes, err)
 	}
+	for _, contents := range []string{"", "  \n\t\n"} {
+		empty := filepath.Join(directory, fmt.Sprintf("empty-%d.txt", len(contents)))
+		if err := os.WriteFile(empty, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		passes, err = transcriptPassesQualityCheck(empty)
+		if err != nil || passes {
+			t.Fatalf("blank transcript: passes=%v err=%v", passes, err)
+		}
+	}
 }
 
 func TestTranscriptQualityCheckSupportsLongLines(t *testing.T) {
@@ -266,6 +277,35 @@ exit 7
 	}
 	if matches, _ := filepath.Glob(filepath.Join(transcriptDir, "*-new-*.txt")); len(matches) != 0 {
 		t.Fatalf("temporary transcripts remain: %v", matches)
+	}
+}
+
+func TestTranscribeMemoRejectsBlankOutput(t *testing.T) {
+	directory := t.TempDir()
+	installFakeWhisper(t, directory, `
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output-dir) output_dir="$2"; shift 2 ;;
+    --output-name) output_name="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+: > "$output_dir/$output_name.txt"
+`)
+	transcriptDir := filepath.Join(directory, "transcripts")
+	if err := os.Mkdir(transcriptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	value := group{Course: "MATH351", TranscriptDir: transcriptDir, Memos: []Memo{{Course: "MATH351", Path: filepath.Join(directory, "memo.m4a"), Stem: "2026-08-25-pt01", Part: "01"}}}
+	err := transcribeMemo(context.Background(), &value, 0, Options{Model: DefaultModel}, func(event) bool { return true })
+	if err == nil || !strings.Contains(err.Error(), "empty transcript") {
+		t.Fatalf("error = %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(transcriptDir, "2026-08-25-pt01.txt")); !os.IsNotExist(statErr) {
+		t.Fatalf("blank output was published: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(transcriptDir, "2026-08-25-pt01.rejected.txt")); statErr != nil {
+		t.Fatalf("rejected output missing: %v", statErr)
 	}
 }
 
