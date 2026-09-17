@@ -204,6 +204,154 @@ func TestRouteDeduplicatesUUIDsAndNumbersParts(t *testing.T) {
 	}
 }
 
+func TestRouteHandlesQTAWithoutBroadeningUntaggedM4A(t *testing.T) {
+	directory := t.TempDir()
+	root := filepath.Join(directory, "semester")
+	source := filepath.Join(directory, "source")
+	memos := filepath.Join(root, "MATH351", "memos")
+	for _, path := range []string{source, memos} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, contents := range map[string]string{
+		"cloud.qta": "cloud-partial", "native-a.m4a": "native-a", "native-b.m4a": "native-b",
+		"pair.m4a": "pair", "pair.qta": "pair", "untagged.m4a": "untagged",
+	} {
+		if err := os.WriteFile(filepath.Join(source, name), []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	installQTAFFprobe(t, directory, "600.0")
+	options := Options{Root: root, Source: source, Location: time.Local, Schedule: testSchedule(), Quiet: true}
+	copied, err := routeRecordings(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if copied != 4 {
+		t.Fatalf("copied = %d, want cloud qta, two native UUIDs, and one representation of pair", copied)
+	}
+	transcriptDir := filepath.Join(root, "MATH351", "transcripts")
+	if err := os.MkdirAll(transcriptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"2026-08-25-pt01.txt", "2026-08-25.txt"} {
+		if err := os.WriteFile(filepath.Join(transcriptDir, name), []byte("stale transcript\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(source, "cloud.qta"), []byte("cloud-complete"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	installQTAFFprobe(t, directory, "1200.0")
+	copied, err = routeRecordings(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if copied != 1 {
+		t.Fatalf("duration growth updates = %d, want 1 existing part update", copied)
+	}
+	contents, err := os.ReadFile(filepath.Join(memos, "2026-08-25-pt01.m4a"))
+	if err != nil || string(contents) != "cloud-complete" {
+		t.Fatalf("updated qta destination = %q, err=%v", contents, err)
+	}
+	for _, stem := range []string{"2026-08-25-pt01", "2026-08-25"} {
+		if _, err := os.Stat(filepath.Join(transcriptDir, stem+".txt")); !os.IsNotExist(err) {
+			t.Fatalf("updated audio retained stale %s.txt: %v", stem, err)
+		}
+		kept, err := os.ReadFile(filepath.Join(transcriptDir, stem+".superseded.txt"))
+		if err != nil || string(kept) != "stale transcript\n" {
+			t.Fatalf("old %s transcript was not set aside: %q, err=%v", stem, kept, err)
+		}
+	}
+}
+
+func TestRouteFailedQTAUpdateKeepsTranscripts(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	directory := t.TempDir()
+	root := filepath.Join(directory, "semester")
+	source := filepath.Join(directory, "source")
+	memos := filepath.Join(root, "MATH351", "memos")
+	transcriptDir := filepath.Join(root, "MATH351", "transcripts")
+	for _, path := range []string{source, memos, transcriptDir} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(source, "cloud.qta"), []byte("cloud-partial"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	installQTAFFprobe(t, directory, "600.0")
+	options := Options{Root: root, Source: source, Location: time.Local, Schedule: testSchedule(), Quiet: true}
+	if _, err := routeRecordings(context.Background(), options); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"2026-08-25-pt01.txt", "2026-08-25.txt"} {
+		if err := os.WriteFile(filepath.Join(transcriptDir, name), []byte("hand-edited transcript\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(source, "cloud.qta"), []byte("cloud-complete"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	installQTAFFprobe(t, directory, "1200.0")
+	// A read-only memos directory makes the atomic copy fail after the
+	// transcripts have already been set aside.
+	if err := os.Chmod(memos, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(memos, 0o755) })
+	if _, err := routeRecordings(context.Background(), options); err == nil {
+		t.Fatal("update into a read-only memos directory succeeded")
+	}
+	audio, err := os.ReadFile(filepath.Join(memos, "2026-08-25-pt01.m4a"))
+	if err != nil || string(audio) != "cloud-partial" {
+		t.Fatalf("routed audio = %q, err=%v; want the original partial copy", audio, err)
+	}
+	for _, stem := range []string{"2026-08-25-pt01", "2026-08-25"} {
+		contents, err := os.ReadFile(filepath.Join(transcriptDir, stem+".txt"))
+		if err != nil || string(contents) != "hand-edited transcript\n" {
+			t.Fatalf("failed update lost %s.txt: %q, err=%v", stem, contents, err)
+		}
+		if _, err := os.Stat(filepath.Join(transcriptDir, stem+".superseded.txt")); !os.IsNotExist(err) {
+			t.Fatalf("failed update left %s.superseded.txt behind: %v", stem, err)
+		}
+	}
+}
+
+func TestRoutePrefersLaterLongerNativeRecordingOverSyntheticQTA(t *testing.T) {
+	directory := t.TempDir()
+	root := filepath.Join(directory, "semester")
+	source := filepath.Join(directory, "source")
+	memos := filepath.Join(root, "MATH351", "memos")
+	for _, path := range []string{source, memos} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, contents := range map[string]string{"a-cloud.qta": "cloud-partial", "z-native.m4a": "cloud-native"} {
+		if err := os.WriteFile(filepath.Join(source, name), []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	installQTAFFprobe(t, directory, "1200.0")
+	copied, err := routeRecordings(context.Background(), Options{
+		Root: root, Source: source, Location: time.Local, Schedule: testSchedule(), Quiet: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if copied != 2 {
+		t.Fatalf("copy/update count = %d, want initial qta plus native replacement", copied)
+	}
+	contents, err := os.ReadFile(filepath.Join(memos, "2026-08-25-pt01.m4a"))
+	if err != nil || string(contents) != "cloud-native" {
+		t.Fatalf("routed pair = %q, err=%v; partial qta won", contents, err)
+	}
+}
+
 func TestRoutePreservesSourceStatErrors(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing", "Recordings")
 	_, err := routeRecordings(context.Background(), Options{Root: t.TempDir(), Source: missing})
@@ -358,16 +506,76 @@ func installFakeFFprobe(t *testing.T, directory string) {
 set -eu
 for last do :; done
 case "${last##*/}" in
-  2026-08-25-pt01.m4a|duplicate.m4a) uuid="duplicate-uuid" ;;
-  new-a.m4a) uuid="new-a-uuid" ;;
-  new-b.m4a) uuid="new-b-uuid" ;;
+  2026-08-25-pt01.m4a|duplicate.m4a) uuid="duplicate-uuid"; created="2026-08-25T11:40:00" ;;
+  new-a.m4a) uuid="new-a-uuid"; created="2026-08-25T11:41:00" ;;
+  new-b.m4a) uuid="new-b-uuid"; created="2026-08-25T11:42:00" ;;
   *) exit 1 ;;
 esac
-printf '{"format":{"duration":"4200.0","tags":{"creation_time":"2026-08-25T11:40:00","voice-memo-uuid":"%s"}}}\n' "$uuid"
+printf '{"format":{"duration":"4200.0","tags":{"creation_time":"%s","voice-memo-uuid":"%s"}}}\n' "$created" "$uuid"
 `
 	path := filepath.Join(bin, "ffprobe")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func installQTAFFprobe(t *testing.T, directory, duration string) {
+	t.Helper()
+	bin := filepath.Join(directory, "qta-bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+set -eu
+for last do :; done
+value=$(cat "$last")
+duration="` + duration + `"
+case "$value" in
+  cloud-partial) created="2026-08-25T11:40:00"; uuid=""; duration="600.0" ;;
+  cloud-complete) created="2026-08-25T11:40:00"; uuid="" ;;
+  cloud-native) created="2026-08-25T11:40:00"; uuid="cloud-native-uuid" ;;
+  native-a) created="2026-08-25T11:42:00"; uuid="native-a-uuid" ;;
+  native-b) created="2026-08-25T11:42:00"; uuid="native-b-uuid" ;;
+  pair)
+    created="2026-08-25T11:41:00"
+    case "$last" in *.qta) uuid="" ;; *) uuid="pair-uuid" ;; esac
+    ;;
+  untagged) created="2026-08-25T11:42:00"; uuid="" ;;
+  *) exit 1 ;;
+esac
+printf '{"format":{"duration":"%s","tags":{"creation_time":"%s","voice-memo-uuid":"%s"}}}\n' "$duration" "$created" "$uuid"
+`
+	path := filepath.Join(bin, "ffprobe")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestSetAsideTranscriptsNeverOverwritesAnEarlierSetAside(t *testing.T) {
+	root := t.TempDir()
+	memo := filepath.Join(root, "MATH351", "memos", "2026-08-25-pt01.m4a")
+	transcripts := filepath.Join(root, "MATH351", "transcripts")
+	if err := os.MkdirAll(transcripts, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	part := filepath.Join(transcripts, "2026-08-25-pt01.txt")
+	for _, version := range []string{"hand-edited v1\n", "v2\n"} {
+		if err := os.WriteFile(part, []byte(version), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := setAsideTranscripts(memo); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, want := range map[string]string{
+		"2026-08-25-pt01.superseded.txt":   "hand-edited v1\n",
+		"2026-08-25-pt01.superseded-2.txt": "v2\n",
+	} {
+		got, err := os.ReadFile(filepath.Join(transcripts, name))
+		if err != nil || string(got) != want {
+			t.Errorf("%s = %q, err=%v; want %q", name, got, err, want)
+		}
+	}
 }

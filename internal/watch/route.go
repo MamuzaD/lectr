@@ -32,10 +32,12 @@ type Schedule struct {
 }
 
 type Recording struct {
-	Path     string
-	UUID     string
-	Started  time.Time
-	Duration time.Duration
+	Path       string
+	UUID       string
+	CreationID string
+	Synthetic  bool
+	Started    time.Time
+	Duration   time.Duration
 }
 
 type Options struct {
@@ -85,11 +87,25 @@ func routeRecordings(ctx context.Context, options Options) (int, error) {
 		if err := ctx.Err(); err != nil {
 			return copied, err
 		}
-		recording, err := inspectRecording(ctx, path, options.Location)
+		recording, err := inspectRecording(ctx, path, options.Location, strings.EqualFold(filepath.Ext(path), ".qta"))
 		if err != nil {
 			return copied, err
 		}
-		if recording == nil || known[recording.UUID] {
+		if recording == nil {
+			continue
+		}
+		if existing := known.match(recording); existing != nil {
+			if existing.Synthetic && recording.Duration > existing.Duration {
+				action := "Updated"
+				if options.DryRun {
+					action = "Would update"
+				} else if err := replaceRoutedAudio(path, existing.Path); err != nil {
+					return copied, err
+				}
+				existing.Duration, existing.UUID, existing.Synthetic = recording.Duration, recording.UUID, recording.Synthetic
+				fmt.Printf("%s %s -> %s\n", action, filepath.Base(path), relativeToRoot(existing.Path, options.Root))
+				copied++
+			}
 			continue
 		}
 		meeting := MatchingClass(*recording, options.Schedule)
@@ -104,7 +120,9 @@ func routeRecordings(ctx context.Context, options Options) (int, error) {
 		action := "Copied"
 		if options.DryRun {
 			action = "Would copy"
-			known[recording.UUID] = true
+			routed := *recording
+			routed.Path = destination
+			known.remember(&routed)
 		} else {
 			if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 				return copied, err
@@ -112,7 +130,9 @@ func routeRecordings(ctx context.Context, options Options) (int, error) {
 			if err := CopyAtomically(path, destination); err != nil {
 				return copied, err
 			}
-			known[recording.UUID] = true
+			routed := *recording
+			routed.Path = destination
+			known.remember(&routed)
 		}
 		fmt.Printf("%s %s -> %s\n", action, filepath.Base(path), relativeToRoot(destination, options.Root))
 		copied++
@@ -121,6 +141,72 @@ func routeRecordings(ctx context.Context, options Options) (int, error) {
 		fmt.Println("No new class recordings found.")
 	}
 	return copied, nil
+}
+
+// replaceRoutedAudio swaps in a longer copy of an already-routed recording.
+// Transcripts of the old audio are set aside rather than deleted (they may
+// carry hand edits) and are put back if the copy fails, so a failed update
+// never costs a transcript.
+func replaceRoutedAudio(source, destination string) error {
+	moved, err := setAsideTranscripts(destination)
+	if err == nil {
+		err = CopyAtomically(source, destination)
+	}
+	if err != nil {
+		return errors.Join(err, restoreTranscripts(moved))
+	}
+	return nil
+}
+
+type setAside struct{ original, aside string }
+
+// setAsideTranscripts renames the part and combined transcripts derived from
+// memoPath to *.superseded.txt, which the transcribe glob never matches.
+func setAsideTranscripts(memoPath string) ([]setAside, error) {
+	transcriptDir := filepath.Join(filepath.Dir(filepath.Dir(memoPath)), "transcripts")
+	stem := strings.TrimSuffix(filepath.Base(memoPath), filepath.Ext(memoPath))
+	paths := []string{filepath.Join(transcriptDir, stem+".txt")}
+	if len(stem) >= len("2006-01-02") {
+		paths = append(paths, filepath.Join(transcriptDir, stem[:len("2006-01-02")]+".txt"))
+	}
+	var moved []setAside
+	for _, path := range paths {
+		aside := freeSupersededPath(path)
+		if err := os.Rename(path, aside); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return moved, err
+		}
+		moved = append(moved, setAside{original: path, aside: aside})
+	}
+	return moved, nil
+}
+
+// freeSupersededPath picks X.superseded.txt, or X.superseded-2.txt and so on
+// when earlier updates already set a transcript aside, so a second update
+// never overwrites a first one that may hold hand edits.
+func freeSupersededPath(path string) string {
+	base := strings.TrimSuffix(path, ".txt") + ".superseded"
+	candidate := base + ".txt"
+	for n := 2; ; n++ {
+		// Any stat error (not just "missing") ends the search; the rename
+		// that follows then reports the real problem.
+		if _, err := os.Lstat(candidate); err != nil {
+			return candidate
+		}
+		candidate = fmt.Sprintf("%s-%d.txt", base, n)
+	}
+}
+
+func restoreTranscripts(moved []setAside) error {
+	var errs []error
+	for _, entry := range moved {
+		if err := os.Rename(entry.aside, entry.original); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // SourceInventory deliberately uses ReadDir instead of filepath.Glob. Glob
@@ -141,7 +227,8 @@ func sourceRecordingPaths(source string) ([]string, error) {
 	}
 	paths := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".m4a") {
+		ext := filepath.Ext(entry.Name())
+		if entry.IsDir() || (!strings.EqualFold(ext, ".m4a") && !strings.EqualFold(ext, ".qta")) {
 			continue
 		}
 		paths = append(paths, filepath.Join(source, entry.Name()))
@@ -158,7 +245,7 @@ func ffprobePath() (string, error) {
 	return path, nil
 }
 
-func inspectRecording(ctx context.Context, path string, location *time.Location) (*Recording, error) {
+func inspectRecording(ctx context.Context, path string, location *time.Location, allowSynthetic bool) (*Recording, error) {
 	probe, err := ffprobePath()
 	if err != nil {
 		return nil, err
@@ -184,10 +271,48 @@ func inspectRecording(ctx context.Context, path string, location *time.Location)
 	uuid := result.Format.Tags["voice-memo-uuid"]
 	duration, durationErr := time.ParseDuration(result.Format.Duration + "s")
 	started, startedErr := parseCreationTime(created, location)
-	if uuid == "" || durationErr != nil || startedErr != nil {
+	if durationErr != nil || startedErr != nil {
 		return nil, nil
 	}
-	return &Recording{Path: path, UUID: uuid, Started: started.In(location), Duration: duration}, nil
+	creationID := "created:" + started.UTC().Format(time.RFC3339Nano)
+	if uuid == "" {
+		if !allowSynthetic {
+			return nil, nil
+		}
+		// .qta recordings synced in from other devices via iCloud carry no
+		// voice-memo-uuid tag. Creation time remains stable while an iCloud
+		// download's duration grows, and is preserved in the routed copy.
+		uuid = "synthetic:" + creationID
+		return &Recording{Path: path, UUID: uuid, CreationID: creationID, Synthetic: true, Started: started.In(location), Duration: duration}, nil
+	}
+	return &Recording{Path: path, UUID: uuid, CreationID: creationID, Started: started.In(location), Duration: duration}, nil
+}
+
+type recordingIndex struct {
+	byUUID     map[string]*Recording
+	byCreation map[string][]*Recording
+}
+
+func newRecordingIndex() *recordingIndex {
+	return &recordingIndex{byUUID: make(map[string]*Recording), byCreation: make(map[string][]*Recording)}
+}
+
+func (index *recordingIndex) match(recording *Recording) *Recording {
+	if existing := index.byUUID[recording.UUID]; existing != nil {
+		return existing
+	}
+	for _, existing := range index.byCreation[recording.CreationID] {
+		if recording.Synthetic || existing.Synthetic {
+			return existing
+		}
+	}
+	return nil
+}
+
+func (index *recordingIndex) remember(recording *Recording) {
+	copy := *recording
+	index.byUUID[copy.UUID] = &copy
+	index.byCreation[copy.CreationID] = append(index.byCreation[copy.CreationID], &copy)
 }
 
 func parseCreationTime(value string, location *time.Location) (time.Time, error) {
@@ -243,8 +368,8 @@ func maxTime(left, right time.Time) time.Time {
 	return right
 }
 
-func existingUUIDs(ctx context.Context, options Options) (map[string]bool, error) {
-	uuids := make(map[string]bool)
+func existingUUIDs(ctx context.Context, options Options) (*recordingIndex, error) {
+	recordings := newRecordingIndex()
 	seenCourses := make(map[string]bool)
 	for _, meeting := range options.Schedule.Meetings {
 		if seenCourses[meeting.Course] {
@@ -257,16 +382,16 @@ func existingUUIDs(ctx context.Context, options Options) (map[string]bool, error
 			return nil, err
 		}
 		for _, path := range paths {
-			recording, err := inspectRecording(ctx, path, options.Location)
+			recording, err := inspectRecording(ctx, path, options.Location, true)
 			if err != nil {
 				return nil, err
 			}
 			if recording != nil {
-				uuids[recording.UUID] = true
+				recordings.remember(recording)
 			}
 		}
 	}
-	return uuids, nil
+	return recordings, nil
 }
 
 func NextDestination(root, course string, recorded time.Time) string {
