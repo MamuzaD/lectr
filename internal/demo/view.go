@@ -1,8 +1,6 @@
 package demo
 
 import (
-	"fmt"
-
 	tea "charm.land/bubbletea/v2"
 	"github.com/mamuzad/lectr/internal/ui"
 )
@@ -19,34 +17,11 @@ func Run(profile string) error {
 func (m Model) View() tea.View { return tea.NewView(m.render()) }
 
 func (m Model) render() string {
-	body := m.backlogView()
-	if m.screen == pickerScreen {
-		body = m.pickerView()
-	} else if m.screen == workingScreen {
+	body := m.selector.View()
+	if m.screen == workingScreen {
 		body = m.workingView()
 	}
 	return ui.Shell(body)
-}
-
-func (m Model) backlogView() string {
-	count := len(m.fixture.lectures)
-	return ui.BacklogMenu(
-		fmt.Sprintf("%d recordings ready  ·  %s", count, m.fixture.audio),
-		"What do you want to transcribe?",
-		[]ui.MenuOption{
-			{Label: "Catch up everything", Detail: fmt.Sprintf("%d recordings", count)},
-			{Label: "Today only", Detail: fmt.Sprintf("%d recordings", m.fixture.todayCount)},
-			{Label: "Choose recordings"}, {Label: "Exit"},
-		}, m.cursor,
-	)
-}
-
-func (m Model) pickerView() string {
-	choices := make([]ui.RecordingChoice, len(m.fixture.lectures))
-	for index, lecture := range m.fixture.lectures {
-		choices[index] = ui.RecordingChoice{Label: lecture.label + "  " + lecture.course, Duration: lecture.duration, Selected: m.selected[index]}
-	}
-	return ui.RecordingPicker(choices, m.cursor)
 }
 
 func (m Model) workingView() string {

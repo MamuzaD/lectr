@@ -5,13 +5,13 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/mamuzad/lectr/internal/ui"
 )
 
 type screen uint8
 
 const (
-	backlogScreen screen = iota
-	pickerScreen
+	selectionScreen screen = iota
 	workingScreen
 )
 
@@ -41,8 +41,7 @@ type tickMsg struct{}
 type Model struct {
 	fixture  fixture
 	screen   screen
-	cursor   int
-	selected []bool
+	selector ui.RecordingSelector
 	queue    []lecture
 	current  int
 	phase    phase
@@ -68,7 +67,18 @@ func NewProfile(profile string) (Model, error) {
 }
 
 func newModel(value fixture) Model {
-	return Model{fixture: value, screen: backlogScreen, selected: make([]bool, len(value.lectures))}
+	items := make([]ui.SelectionItem, len(value.lectures))
+	todayStart := max(0, len(value.lectures)-value.todayCount)
+	for index, lecture := range value.lectures {
+		items[index] = ui.SelectionItem{
+			Label: lecture.label + "  " + lecture.course, Duration: lecture.duration,
+			Today: index >= todayStart,
+		}
+	}
+	return Model{
+		fixture: value, screen: selectionScreen,
+		selector: ui.NewRecordingSelector(items, value.audio),
+	}
 }
 
 func fallFixture() fixture {
@@ -89,14 +99,18 @@ func fallFixture() fixture {
 }
 
 func springFixture() fixture {
-	courses := []string{"CS401", "MATH402", "PHYS310", "HIST220", "ENGL305"}
-	dates := []string{"2027-04-27", "2027-04-28", "2027-04-29", "2027-04-30", "2027-05-03", "2027-05-04", "2027-05-05", "2027-05-06", "2027-05-07", "2027-05-10"}
-	durations := []string{"1:08:14", "1:16:42", "1:02:31", "52:18", "1:21:06", "1:11:27", "1:14:09", "1:05:44", "55:02", "1:18:36"}
-	lectures := make([]lecture, len(dates))
-	for index, date := range dates {
-		lectures[index] = demoLecture(courses[index%len(courses)], date, durations[index])
+	return fixture{
+		todayCount: 2,
+		audio:      "about 7h 15m audio",
+		lectures: []lecture{
+			demoLecture("CS472", "2026-04-16", "1:12:25"),
+			demoLecture("CS422", "2026-04-20", "1:12:08"),
+			demoLecture("CS460", "2026-04-20", "1:14:31"),
+			demoLecture("CS472", "2026-04-21", "1:10:54"),
+			demoLecture("CS422", "2026-04-22", "1:13:17"),
+			demoLecture("CS460", "2026-04-22", "1:11:46"),
+		},
 	}
-	return fixture{lectures: lectures, todayCount: 5, audio: "about 11h 25m audio"}
 }
 
 func stressFixture() fixture {
@@ -130,70 +144,25 @@ func (m Model) Init() tea.Cmd { return nil }
 func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := message.(type) {
 	case tea.KeyPressMsg:
-		if message.String() == "ctrl+c" {
+		if m.screen == workingScreen && message.String() == "ctrl+c" {
 			return m, tea.Quit
 		}
-		switch m.screen {
-		case backlogScreen:
-			return m.updateBacklog(message)
-		case pickerScreen:
-			return m.updatePicker(message)
+		if m.screen == selectionScreen {
+			selector, action := m.selector.Update(message.String())
+			m.selector = selector
+			switch action {
+			case ui.SelectionConfirmed:
+				queue := make([]lecture, 0, len(m.fixture.lectures))
+				for _, index := range selector.SelectedIndices() {
+					queue = append(queue, m.fixture.lectures[index])
+				}
+				return m.start(queue)
+			case ui.SelectionExited, ui.SelectionInterrupted:
+				return m, tea.Quit
+			}
 		}
 	case tickMsg:
 		return m.updateProgress()
-	}
-	return m, nil
-}
-
-func (m Model) updateBacklog(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	switch key.String() {
-	case "q", "esc":
-		return m, tea.Quit
-	case "up", "k":
-		m.cursor = (m.cursor + 3) % 4
-	case "down", "j":
-		m.cursor = (m.cursor + 1) % 4
-	case "enter":
-		switch m.cursor {
-		case 0:
-			return m.start(append([]lecture(nil), m.fixture.lectures...))
-		case 1:
-			start := max(0, len(m.fixture.lectures)-m.fixture.todayCount)
-			return m.start(append([]lecture(nil), m.fixture.lectures[start:]...))
-		case 2:
-			m.screen, m.cursor = pickerScreen, 0
-			m.selected = make([]bool, len(m.fixture.lectures))
-		case 3:
-			return m, tea.Quit
-		}
-	}
-	return m, nil
-}
-
-func (m Model) updatePicker(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	count := len(m.fixture.lectures)
-	if count == 0 {
-		return m, nil
-	}
-	switch key.String() {
-	case "up", "k":
-		m.cursor = (m.cursor + count - 1) % count
-	case "down", "j":
-		m.cursor = (m.cursor + 1) % count
-	case "space", " ":
-		m.selected[m.cursor] = !m.selected[m.cursor]
-	case "esc":
-		m.screen, m.cursor = backlogScreen, 0
-	case "enter":
-		queue := make([]lecture, 0, count)
-		for index, selected := range m.selected {
-			if selected {
-				queue = append(queue, m.fixture.lectures[index])
-			}
-		}
-		if len(queue) > 0 {
-			return m.start(queue)
-		}
 	}
 	return m, nil
 }

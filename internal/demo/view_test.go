@@ -24,7 +24,7 @@ func TestBacklogQuitsWithQOrEscape(t *testing.T) {
 		{Code: tea.KeyEscape},
 	}
 	for _, key := range keys {
-		_, command := New().updateBacklog(tea.KeyPressMsg(key))
+		_, command := New().Update(tea.KeyPressMsg(key))
 		if command == nil {
 			t.Fatalf("%s did not return a quit command", tea.KeyPressMsg(key).String())
 		}
@@ -67,24 +67,39 @@ func uiText(value string) string {
 	return regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`).ReplaceAllString(value, "")
 }
 
-func TestSpringDemoHasFiveCoursesFromJanuaryToMay(t *testing.T) {
+func TestSpringDemoMatchesClassSchedule(t *testing.T) {
 	m, err := NewProfile("spring")
 	if err != nil {
 		t.Fatal(err)
 	}
 	view := m.render()
-	for _, value := range []string{"10 recordings ready", "Today only", "5 recordings"} {
+	for _, value := range []string{"6 recordings ready", "Today only", "2 recordings"} {
 		if !strings.Contains(view, value) {
 			t.Fatalf("spring demo missing %q", value)
 		}
 	}
-	for _, lecture := range m.fixture.lectures {
-		if strings.Contains(lecture.label, "disc") {
-			t.Fatalf("stress fixture contains invented discussion label: %q", lecture.label)
+	want := []struct {
+		course string
+		date   string
+	}{
+		{"CS472", "2026-04-16"},
+		{"CS422", "2026-04-20"},
+		{"CS460", "2026-04-20"},
+		{"CS472", "2026-04-21"},
+		{"CS422", "2026-04-22"},
+		{"CS460", "2026-04-22"},
+	}
+	if len(m.fixture.lectures) != len(want) {
+		t.Fatalf("spring fixture has %d lectures, want %d", len(m.fixture.lectures), len(want))
+	}
+	for index, expected := range want {
+		lecture := m.fixture.lectures[index]
+		if lecture.course != expected.course || lecture.date != expected.date {
+			t.Fatalf("spring lecture %d = %s %s, want %s %s", index, lecture.course, lecture.date, expected.course, expected.date)
 		}
 	}
-	picker := m.pickerView()
-	for _, value := range []string{"CS401", "MATH402", "PHYS310", "HIST220", "ENGL305"} {
+	picker := openPicker(m).render()
+	for _, value := range []string{"CS422", "CS460", "CS472"} {
 		if !strings.Contains(picker, value) {
 			t.Fatalf("spring picker missing course %q:\n%s", value, picker)
 		}
@@ -112,10 +127,19 @@ func TestStressDemoHasDenseFiveDaySchedule(t *testing.T) {
 	if len(seen) != 5 {
 		t.Fatalf("stress fixture has %d courses: %v", len(seen), seen)
 	}
-	picker := m.pickerView()
+	picker := openPicker(m).render()
 	for _, value := range []string{"CS401", "MATH402", "PHYS310", "HIST220", "ENGL305"} {
 		if !strings.Contains(picker, value) {
 			t.Fatalf("stress picker missing course %q:\n%s", value, picker)
 		}
 	}
+}
+
+func openPicker(m Model) Model {
+	for range 2 {
+		updated, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+		m = updated.(Model)
+	}
+	updated, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	return updated.(Model)
 }
