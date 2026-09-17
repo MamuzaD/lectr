@@ -50,6 +50,10 @@ func transcriptPassesQualityCheck(path string) (bool, error) {
 }
 
 func combineParts(course, date, transcriptDir string) (string, error) {
+	return combinePartsForGroup(course, date, transcriptDir, nil)
+}
+
+func combinePartsForGroup(course, date, transcriptDir string, memoStems map[string]bool) (string, error) {
 	parts, err := filepath.Glob(filepath.Join(transcriptDir, date+"-pt[0-9][0-9].txt"))
 	if err != nil {
 		return "", err
@@ -64,6 +68,10 @@ func combineParts(course, date, transcriptDir string) (string, error) {
 			return "", err
 		}
 		if problem != "" {
+			stem := strings.TrimSuffix(filepath.Base(part), filepath.Ext(part))
+			if memoStems != nil && !memoStems[stem] {
+				return "", fmt.Errorf("%s: %s detected in orphaned %s; move or remove that transcript before retrying", course, problem, filepath.Base(part))
+			}
 			return "", fmt.Errorf("%s: %s detected in %s; rerun with --force", course, problem, filepath.Base(part))
 		}
 	}

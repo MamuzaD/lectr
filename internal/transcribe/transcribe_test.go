@@ -28,18 +28,67 @@ func TestValidateSelector(t *testing.T) {
 	}
 }
 
-func TestPendingGroupsDropsFullyTranscribedDates(t *testing.T) {
+func TestPendingGroupsDropsFullyTranscribedAndCombinedDates(t *testing.T) {
+	transcriptDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(transcriptDir, "2026-08-24.txt"), []byte("combined"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	values := []group{
-		{Course: "MATH351", Date: "2026-08-24", Memos: []Memo{{Part: "01", Status: skipped}}},
-		{Course: "MATH351", Date: "2026-08-25", Memos: []Memo{{Part: "01", Status: skipped}, {Part: "02", Status: waiting}}},
-		{Course: "MATH451", Date: "2026-08-26", Memos: []Memo{{Part: "01", Status: waiting}}},
+		// All memos transcribed and already combined: nothing left to do.
+		{Course: "MATH351", Date: "2026-08-24", TranscriptDir: transcriptDir, Memos: []Memo{{Part: "01", Status: skipped}}},
+		// All memos transcribed but never combined: still pending.
+		{Course: "MATH351", Date: "2026-08-25", TranscriptDir: transcriptDir, Memos: []Memo{{Part: "01", Status: skipped}}},
+		{Course: "MATH351", Date: "2026-08-26", TranscriptDir: transcriptDir, Memos: []Memo{{Part: "01", Status: skipped}, {Part: "02", Status: waiting}}},
+		{Course: "MATH451", Date: "2026-08-27", TranscriptDir: transcriptDir, Memos: []Memo{{Part: "01", Status: waiting}}},
 	}
 	pending := pendingGroups(values)
-	if len(pending) != 2 {
-		t.Fatalf("expected 2 pending groups, got %d: %+v", len(pending), pending)
+	if len(pending) != 3 {
+		t.Fatalf("expected 3 pending groups, got %d: %+v", len(pending), pending)
 	}
-	if pending[0].Date != "2026-08-25" || pending[1].Date != "2026-08-26" {
+	if pending[0].Date != "2026-08-25" || pending[1].Date != "2026-08-26" || pending[2].Date != "2026-08-27" {
 		t.Fatalf("unexpected pending groups: %+v", pending)
+	}
+}
+
+func TestPendingGroupsDropsFullyTranscribedSkipCombineDates(t *testing.T) {
+	transcriptDir := t.TempDir()
+	values := []group{
+		{Course: "MATH351", Date: "2026-08-24", TranscriptDir: transcriptDir, SkipCombine: true, Memos: []Memo{{Part: "01", Status: skipped}}},
+	}
+	pending := pendingGroups(values)
+	if len(pending) != 0 {
+		t.Fatalf("expected 0 pending groups, got %d: %+v", len(pending), pending)
+	}
+}
+
+func TestRunCombinesFullyTranscribedGroupWithoutWhisper(t *testing.T) {
+	root := t.TempDir()
+	memoDir := filepath.Join(root, "MATH351", "memos")
+	transcriptDir := filepath.Join(root, "MATH351", "transcripts")
+	if err := os.MkdirAll(memoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(transcriptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(memoDir, "2026-08-27-pt01.m4a"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(transcriptDir, "2026-08-27-pt01.txt"), []byte("already transcribed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// No mlx_whisper on PATH: Run must not require it since nothing needs
+	// transcribing, only combining. Note stdin/stdout are not TTYs under
+	// `go test`, so this exercises the non-interactive branch of Run, not
+	// the chooseGroups/filterGroups menu path — that's covered separately
+	// by TestSelectionMenuCombinesUnselectedFullyTranscribedGroup in
+	// select_test.go, which drives the real bubbletea selector.
+	t.Setenv("PATH", t.TempDir())
+	if err := Run(context.Background(), Options{Root: root, Courses: []string{"MATH351"}, ShowSelectionMenu: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(transcriptDir, "2026-08-27.txt")); err != nil {
+		t.Fatalf("combined transcript was not produced: %v", err)
 	}
 }
 
@@ -200,6 +249,44 @@ func TestCombinePartsIsAtomicAndOrdered(t *testing.T) {
 	want := "===== Part 01 =====\n\nfirst\n\n===== Part 02 =====\n\nsecond\n\n"
 	if string(contents) != want {
 		t.Fatalf("combined transcript = %q, want %q", contents, want)
+	}
+}
+
+func TestProcessGroupsContinuesAfterBadOrphanedPart(t *testing.T) {
+	directory := t.TempDir()
+	installFakeWhisper(t, directory, `
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output-dir) output_dir="$2"; shift 2 ;;
+    --output-name) output_name="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+printf 'healthy transcript\n' > "$output_dir/$output_name.txt"
+`)
+	oldDir := filepath.Join(directory, "old")
+	todayDir := filepath.Join(directory, "today")
+	for _, path := range []string{oldDir, todayDir} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(oldDir, "2026-08-26-pt01.txt"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	groups := []group{
+		{Course: "OLD", Date: "2026-08-26", TranscriptDir: oldDir},
+		{
+			Course: "TODAY", Date: "2026-08-27", TranscriptDir: todayDir, SkipCombine: true,
+			Memos: []Memo{{Course: "TODAY", Path: filepath.Join(directory, "today.m4a"), Stem: "2026-08-27-pt01", Status: waiting}},
+		},
+	}
+	err := processGroups(context.Background(), groups, Options{Model: DefaultModel}, func(event) bool { return true })
+	if err == nil || !strings.Contains(err.Error(), "empty transcript") || !strings.Contains(err.Error(), "orphaned") {
+		t.Fatalf("processGroups error = %v, want orphan transcript failure", err)
+	}
+	if _, err := os.Stat(filepath.Join(todayDir, "2026-08-27-pt01.txt")); err != nil {
+		t.Fatalf("later healthy group did not run: %v", err)
 	}
 }
 

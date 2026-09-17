@@ -110,7 +110,7 @@ func (m model) lecture(groupIndex int) ui.Lecture {
 	}
 	return ui.Lecture{
 		Course: group.Course, Date: group.Date, Memos: memos,
-		Combine: ui.Status(m.combines[groupIndex]), CombinedPath: m.combined[groupIndex],
+		Combine: ui.Status(m.combines[groupIndex]), SkipCombine: group.SkipCombine, CombinedPath: m.combined[groupIndex],
 		TranscriptDir: group.TranscriptDir, Frame: m.frame,
 	}
 }

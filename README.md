@@ -53,7 +53,7 @@ another file.
 ## Usage
 
 ```bash
-# preview or transcribe every pending recording
+# preview pending recordings or open the interactive backlog
 ./lectr transcribe --dry-run
 ./lectr transcribe
 
@@ -77,6 +77,9 @@ action to see its state, paths, and transcription backlog.
 
 Recordings use the name `YYYY-MM-DD-ptNN.m4a`. Existing valid part transcripts
 are skipped unless you pass `--force`.
+
+Interactive `lectr transcribe` runs open the backlog menu before transcription.
+Dry runs and non-interactive invocations do not prompt.
 
 ## Development
 

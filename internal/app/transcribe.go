@@ -47,7 +47,8 @@ func runTranscribe(ctx context.Context, settings config.Config, arguments []stri
 	}
 	return transcribe.Run(ctx, transcribe.Options{
 		Root: settings.Root, Courses: courses, Prompts: settings.Prompts(), Selector: selector,
-		Model: settings.Model, Force: *force, DryRun: *dryRun,
+		Model: settings.Model, Location: settings.Location(), Force: *force, DryRun: *dryRun,
+		ShowSelectionMenu: true,
 	})
 }
 

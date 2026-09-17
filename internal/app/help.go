@@ -67,7 +67,7 @@ func commandUsage(command, configPath string) (string, error) {
 				{Name: "--config PATH", Description: "Use another config file"},
 			},
 			path,
-			"With no filters, transcribes every pending recording.",
+			"Interactive runs open the backlog menu before transcription.",
 			"DATE uses YYYY-MM-DD; MEMO uses YYYY-MM-DD-ptNN.m4a.",
 		), nil
 	case "watch":

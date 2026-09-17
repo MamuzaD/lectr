@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mamuzad/lectr/internal/ui"
 )
@@ -28,13 +29,15 @@ var (
 var ErrCancelled = errors.New("transcription cancelled")
 
 type Options struct {
-	Root     string
-	Courses  []string
-	Prompts  map[string]string
-	Selector string
-	Model    string
-	Force    bool
-	DryRun   bool
+	Root              string
+	Courses           []string
+	Prompts           map[string]string
+	Selector          string
+	Model             string
+	Location          *time.Location
+	Force             bool
+	DryRun            bool
+	ShowSelectionMenu bool
 }
 
 type Counts struct {
@@ -69,6 +72,7 @@ type group struct {
 	Date          string
 	Memos         []Memo
 	TranscriptDir string
+	SkipCombine   bool
 }
 
 type event struct {
@@ -132,10 +136,8 @@ func Run(ctx context.Context, options Options) error {
 	if options.Model == "" {
 		options.Model = DefaultModel
 	}
-	if !options.DryRun {
-		if _, err := exec.LookPath("mlx_whisper"); err != nil {
-			return errors.New("mlx_whisper is missing; install it with: uv tool install mlx-whisper")
-		}
+	if options.Location == nil {
+		options.Location = time.Local
 	}
 
 	groups, err := discoverGroups(options)
@@ -153,9 +155,7 @@ func Run(ctx context.Context, options Options) error {
 		return printDryRun(groups, options)
 	}
 	for index := range groups {
-		if err := prepareGroup(&groups[index], options.Force); err != nil {
-			return err
-		}
+		markExistingMemos(&groups[index], options.Force)
 	}
 	if !options.Force {
 		groups = pendingGroups(groups)
@@ -164,26 +164,76 @@ func Run(ctx context.Context, options Options) error {
 		fmt.Print(ui.Page("Nothing to transcribe", ui.NeutralLine("Every recording is already transcribed.")))
 		return nil
 	}
+	// A group can be pending solely because it still needs combining, with
+	// nothing left to select. Skip the selection menu in that case instead
+	// of showing an empty "0 recordings" prompt for nothing to pick.
+	if anyPendingMemos(groups) && options.ShowSelectionMenu && isTerminal(os.Stdout) && isTerminal(os.Stdin) {
+		groups, err = chooseGroups(ctx, groups, time.Now().In(options.Location))
+		if err != nil {
+			return err
+		}
+		if len(groups) == 0 {
+			return nil
+		}
+	}
+	if anyPendingMemos(groups) {
+		if _, err := exec.LookPath("mlx_whisper"); err != nil {
+			return errors.New("mlx_whisper is missing; install it with: uv tool install mlx-whisper")
+		}
+	}
+	for index := range groups {
+		if err := prepareGroup(&groups[index], options.Force); err != nil {
+			return err
+		}
+	}
 	return runGroups(ctx, groups, options)
 }
 
 // pendingGroups drops groups whose memos were all already transcribed on a
-// previous run, so today's queue only shows what actually runs today.
+// previous run and whose parts are already combined, so today's queue only
+// shows what actually runs today.
 func pendingGroups(values []group) []group {
 	pending := make([]group, 0, len(values))
 	for _, value := range values {
-		hasPending := false
-		for _, memo := range value.Memos {
-			if memo.Status != skipped {
-				hasPending = true
-				break
-			}
-		}
-		if hasPending {
+		if hasPendingMemos(value) || hasFailedMemos(value) || needsCombine(value) {
 			pending = append(pending, value)
 		}
 	}
 	return pending
+}
+
+func needsCombine(value group) bool {
+	if value.SkipCombine {
+		return false
+	}
+	return !fileExists(filepath.Join(value.TranscriptDir, value.Date+".txt"))
+}
+
+func anyPendingMemos(values []group) bool {
+	for _, value := range values {
+		if hasPendingMemos(value) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasPendingMemos(value group) bool {
+	for _, memo := range value.Memos {
+		if memo.Status == waiting {
+			return true
+		}
+	}
+	return false
+}
+
+func hasFailedMemos(value group) bool {
+	for _, memo := range value.Memos {
+		if memo.Status == failed {
+			return true
+		}
+	}
+	return false
 }
 
 func discoverGroups(options Options) ([]group, error) {
@@ -229,6 +279,7 @@ func discoverGroups(options Options) ([]group, error) {
 				groupsByKey[key] = &group{
 					Course: course, Date: matches[1],
 					TranscriptDir: filepath.Join(courseDir, "transcripts"),
+					SkipCombine:   memoPattern.MatchString(options.Selector),
 				}
 				keys = append(keys, key)
 			}
@@ -268,26 +319,69 @@ func audioDuration(path string) string {
 	return fmt.Sprintf("%02d:%02d", minutes, remainder)
 }
 
+func markExistingMemos(value *group, force bool) {
+	if force {
+		return
+	}
+	for index := range value.Memos {
+		if value.Memos[index].Status != waiting {
+			continue
+		}
+		transcript := filepath.Join(value.TranscriptDir, value.Memos[index].Stem+".txt")
+		inspection := inspectTranscript(transcript)
+		if inspection.Err != nil {
+			value.Memos[index].Status = failed
+			value.Memos[index].Detail = inspection.Err.Error()
+		} else if inspection.Problem != "" {
+			value.Memos[index].Status = failed
+			value.Memos[index].Detail = inspection.Problem
+		} else if inspection.Exists {
+			value.Memos[index].Status = skipped
+		}
+	}
+}
+
 func prepareGroup(value *group, force bool) error {
 	if err := os.MkdirAll(value.TranscriptDir, 0o755); err != nil {
 		return err
 	}
+	if force {
+		return nil
+	}
 	for index := range value.Memos {
+		if value.Memos[index].Status != waiting {
+			continue
+		}
 		transcript := filepath.Join(value.TranscriptDir, value.Memos[index].Stem+".txt")
-		if _, err := os.Stat(transcript); err == nil && !force {
-			problem, err := transcriptQualityProblem(transcript)
-			if err != nil {
-				return err
-			}
-			if problem != "" {
-				return fmt.Errorf("%s: %s detected in %s; run again with --force", value.Course, problem, filepath.Base(transcript))
-			}
+		inspection := inspectTranscript(transcript)
+		if inspection.Err != nil {
+			return inspection.Err
+		}
+		if inspection.Problem != "" {
+			return fmt.Errorf("%s: %s detected in %s; run again with --force", value.Course, inspection.Problem, filepath.Base(transcript))
+		}
+		if inspection.Exists {
 			value.Memos[index].Status = skipped
-		} else if err != nil && !os.IsNotExist(err) {
-			return err
 		}
 	}
 	return nil
+}
+
+type transcriptInspection struct {
+	Exists  bool
+	Problem string
+	Err     error
+}
+
+func inspectTranscript(path string) transcriptInspection {
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return transcriptInspection{}
+		}
+		return transcriptInspection{Err: err}
+	}
+	problem, err := transcriptQualityProblem(path)
+	return transcriptInspection{Exists: true, Problem: problem, Err: err}
 }
 
 func printDryRun(groups []group, options Options) error {
@@ -305,7 +399,9 @@ func printDryRun(groups []group, options Options) error {
 			}
 			fmt.Printf("%s: would %s: %s\n", value.Course, action, filepath.Base(memo.Path))
 		}
-		fmt.Printf("%s: would combine parts -> transcripts/%s.txt\n", value.Course, value.Date)
+		if !value.SkipCombine {
+			fmt.Printf("%s: would combine parts -> transcripts/%s.txt\n", value.Course, value.Date)
+		}
 	}
 	return nil
 }

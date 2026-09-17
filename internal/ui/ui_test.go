@@ -59,6 +59,22 @@ func TestCompletedTranscriptionQueueCollapsesLastLecture(t *testing.T) {
 	}
 }
 
+func TestCompletionReceiptDoesNotRenderFailureAsSuccess(t *testing.T) {
+	view := stripANSI(CompletedTranscriptionQueue([]Lecture{{
+		Course: "MATH451", Date: "2026-08-25", Memos: []Memo{{Part: "01", Status: Failed}},
+	}}))
+	if !strings.Contains(view, "×  MATH451") || !strings.Contains(view, "1 recording failed") || strings.Contains(view, "recording transcribed") {
+		t.Fatalf("failed completion receipt:\n%s", view)
+	}
+
+	combineView := stripANSI(CompletedTranscriptionQueue([]Lecture{{
+		Course: "MATH351", Date: "2026-08-25", Combine: Failed,
+	}}))
+	if !strings.Contains(combineView, "processing failed") || strings.Contains(combineView, "✓  MATH351") {
+		t.Fatalf("failed combine receipt:\n%s", combineView)
+	}
+}
+
 var testANSI = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
 
 func stripANSI(value string) string { return testANSI.ReplaceAllString(value, "") }
@@ -149,5 +165,15 @@ func TestRecordingPickerWindowsStressQueues(t *testing.T) {
 	last := RecordingPicker(choices, 19)
 	if !strings.Contains(last, "↑ 12 more") || !strings.Contains(last, "Recording 20") || strings.Contains(last, "Recording 01") {
 		t.Fatalf("last picker window:\n%s", stripANSI(last))
+	}
+}
+
+func TestPartialLectureDoesNotShowCombineStep(t *testing.T) {
+	view := (Lecture{
+		Course: "MATH351", Date: "2026-08-27", SkipCombine: true,
+		Memos: []Memo{{Part: "01", Duration: "45:00", Status: Complete}},
+	}).Render()
+	if strings.Contains(view, "Combine") {
+		t.Fatalf("partial lecture showed a combine step:\n%s", view)
 	}
 }

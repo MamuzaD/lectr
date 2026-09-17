@@ -118,6 +118,7 @@ type Lecture struct {
 	Date          string
 	Memos         []Memo
 	Combine       Status
+	SkipCombine   bool
 	CombinedPath  string
 	TranscriptDir string
 	Frame         int
@@ -180,16 +181,18 @@ func (lecture Lecture) Render() string {
 			lines = append(lines, lipgloss.NewStyle().Foreground(Dim).Render("○  pt"+memo.Part+"  Waiting        "+memo.Duration+" audio"), "")
 		}
 	}
-	if lecture.Combine == Active {
-		parts := make([]string, len(lecture.Memos))
-		for index, memo := range lecture.Memos {
-			parts[index] = "pt" + memo.Part
+	if !lecture.SkipCombine {
+		if lecture.Combine == Active {
+			parts := make([]string, len(lecture.Memos))
+			for index, memo := range lecture.Memos {
+				parts[index] = "pt" + memo.Part
+			}
+			lines = append(lines, lipgloss.NewStyle().Foreground(Orange).Render(spinner)+"  "+lipgloss.NewStyle().Foreground(White).Render(fmt.Sprintf("Combining %d %s", len(lecture.Memos), partLabel)), MutedText("     "+strings.Join(parts, " + ")+"  →  "+lecture.Date+".txt"))
+		} else if lecture.Combine == Complete {
+			lines = append(lines, lipgloss.NewStyle().Foreground(Green).Render("✓")+"  "+lipgloss.NewStyle().Foreground(White).Render(fmt.Sprintf("Combined %d %s", len(lecture.Memos), partLabel)), "     "+Gradient(relativeCombined(lecture.CombinedPath, lecture.TranscriptDir)))
+		} else {
+			lines = append(lines, lipgloss.NewStyle().Foreground(Dim).Render("○  Combine parts  Waiting"), "")
 		}
-		lines = append(lines, lipgloss.NewStyle().Foreground(Orange).Render(spinner)+"  "+lipgloss.NewStyle().Foreground(White).Render(fmt.Sprintf("Combining %d %s", len(lecture.Memos), partLabel)), MutedText("     "+strings.Join(parts, " + ")+"  →  "+lecture.Date+".txt"))
-	} else if lecture.Combine == Complete {
-		lines = append(lines, lipgloss.NewStyle().Foreground(Green).Render("✓")+"  "+lipgloss.NewStyle().Foreground(White).Render(fmt.Sprintf("Combined %d %s", len(lecture.Memos), partLabel)), "     "+Gradient(relativeCombined(lecture.CombinedPath, lecture.TranscriptDir)))
-	} else {
-		lines = append(lines, lipgloss.NewStyle().Foreground(Dim).Render("○  Combine parts  Waiting"), "")
 	}
 	lines = append(lines, "")
 	lines = append(lines, processingFooter()...)
@@ -293,16 +296,23 @@ func recordingCount(count int) string {
 
 func completionReceipt(lecture Lecture) string {
 	result := " transcribed"
+	icon, iconColor := "✓", Green
+	failed := lecture.Combine == Failed
 	if len(lecture.Memos) > 0 {
 		allSkipped := true
 		for _, memo := range lecture.Memos {
 			allSkipped = allSkipped && memo.Status == Skipped
+			failed = failed || memo.Status == Failed
 		}
-		if allSkipped {
+		if failed {
+			result, icon, iconColor = " failed", "×", Red
+		} else if allSkipped {
 			result = " already transcribed"
 		}
+	} else if failed {
+		result, icon, iconColor = " processing failed", "×", Red
 	}
-	return lipgloss.NewStyle().Foreground(Green).Render("✓") + "  " +
+	return lipgloss.NewStyle().Foreground(iconColor).Render(icon) + "  " +
 		lipgloss.NewStyle().Foreground(White).Bold(true).Render(lecture.Course) +
 		MutedText("  ·  "+LectureTitle(lecture.Date)+"  ·  "+recordingCount(len(lecture.Memos))+result)
 }

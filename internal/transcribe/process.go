@@ -62,19 +62,23 @@ func runGroups(parent context.Context, values []group, options Options) error {
 }
 
 func processGroups(ctx context.Context, values []group, options Options, emit func(event) bool) error {
+	var groupErrors []error
 	for groupIndex := range values {
 		forward := func(message event) bool {
 			message.Group = groupIndex
 			return emit(message)
 		}
 		if err := processGroup(ctx, &values[groupIndex], options, forward); err != nil {
-			return err
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			groupErrors = append(groupErrors, err)
 		}
 	}
 	if !emit(event{AllComplete: true}) {
 		return ctx.Err()
 	}
-	return nil
+	return errors.Join(groupErrors...)
 }
 
 func normalizeResult(err error) error {
@@ -101,24 +105,53 @@ func printEvent(value *group, message event) {
 }
 
 func processGroup(ctx context.Context, value *group, options Options, emit func(event) bool) error {
+	var memoErrors []error
 	for index := range value.Memos {
-		if value.Memos[index].Status == skipped {
+		if value.Memos[index].Status == failed {
+			emit(event{Index: index, Status: failed, Detail: value.Memos[index].Detail, HasMemoUpdate: true})
+			memoErrors = append(memoErrors, memoFailure(value, index))
+			continue
+		}
+		if value.Memos[index].Status != waiting {
 			continue
 		}
 		if err := transcribeMemo(ctx, value, index, options, emit); err != nil {
 			return err
 		}
 	}
+	if len(memoErrors) > 0 {
+		return errors.Join(memoErrors...)
+	}
+	if value.SkipCombine {
+		return nil
+	}
 	if !emit(event{Combine: active, HasCombine: true}) {
 		return ctx.Err()
 	}
-	combined, err := combineParts(value.Course, value.Date, value.TranscriptDir)
+	stems := make(map[string]bool, len(value.Memos))
+	for _, memo := range value.Memos {
+		stems[memo.Stem] = true
+	}
+	combined, err := combinePartsForGroup(value.Course, value.Date, value.TranscriptDir, stems)
 	if err != nil {
 		emit(event{Combine: failed, Detail: err.Error(), HasCombine: true})
 		return err
 	}
 	emit(event{Combine: complete, CombinedPath: combined, HasCombine: true})
 	return nil
+}
+
+func memoFailure(value *group, index int) error {
+	memo := value.Memos[index]
+	detail := memo.Detail
+	if detail == "" {
+		detail = "transcription failed"
+	}
+	name := filepath.Base(memo.Path)
+	if memo.Path == "" {
+		name = memo.Stem + ".txt"
+	}
+	return fmt.Errorf("%s: %s: %s; run again with --force", value.Course, name, detail)
 }
 
 func transcribeMemo(ctx context.Context, value *group, index int, options Options, emit func(event) bool) error {
