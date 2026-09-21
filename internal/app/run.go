@@ -23,6 +23,11 @@ func Run(ctx context.Context, arguments []string) int {
 			fmt.Fprint(os.Stderr, ui.Page("Cancelled", ui.ErrorLine("lectr stopped safely")))
 			return 130
 		}
+		var batch *transcribe.BatchError
+		if errors.As(err, &batch) {
+			fmt.Fprint(os.Stderr, batchFailurePage(batch))
+			return 1
+		}
 		fmt.Fprint(os.Stderr, ui.Page("Something went wrong", ui.ErrorLine(err.Error()), ui.MutedText("Run lectr help to see available commands.")))
 		if errors.Is(err, os.ErrPermission) {
 			return permissionExitCode
@@ -30,6 +35,21 @@ func Run(ctx context.Context, arguments []string) int {
 		return 1
 	}
 	return 0
+}
+
+// batchFailurePage lists what needs attention after a batch that otherwise
+// finished, rather than presenting it as a crash.
+func batchFailurePage(batch *transcribe.BatchError) string {
+	title := "1 item needs attention"
+	if len(batch.Failures) != 1 {
+		title = fmt.Sprintf("%d items need attention", len(batch.Failures))
+	}
+	lines := make([]string, 0, len(batch.Failures)+2)
+	for _, failure := range batch.Failures {
+		lines = append(lines, ui.ErrorLine(failure.Error()))
+	}
+	lines = append(lines, "", ui.MutedText("Everything else in this run finished."))
+	return ui.Page(title, lines...)
 }
 
 func run(ctx context.Context, arguments []string) error {

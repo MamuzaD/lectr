@@ -126,6 +126,9 @@ func TestKnownInvalidTranscriptRemainsPendingAndReportsFailure(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(directory, "2026-08-26.txt"), []byte("old combined transcript\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(directory, "2026-08-26-pt01.txt"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	value := group{
 		Course: "OLD", Date: "2026-08-26", TranscriptDir: directory,
 		Memos: []Memo{{Path: "old.m4a", Stem: "2026-08-26-pt01", Status: failed, Detail: "empty transcript"}},
@@ -139,7 +142,7 @@ func TestKnownInvalidTranscriptRemainsPendingAndReportsFailure(t *testing.T) {
 		hadFailureEvent = hadFailureEvent || message.HasMemoUpdate && message.Status == failed
 		return true
 	})
-	if err == nil || !strings.Contains(err.Error(), "--force") || !hadFailureEvent {
+	if err == nil || !strings.Contains(err.Error(), "replace it with: lectr transcribe OLD 2026-08-26 --force") || !hadFailureEvent {
 		t.Fatalf("invalid transcript result: err=%v failureEvent=%v", err, hadFailureEvent)
 	}
 }

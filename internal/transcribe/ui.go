@@ -12,15 +12,16 @@ type eventMsg struct {
 }
 
 type model struct {
-	groups    []group
-	current   int
-	events    <-chan event
-	cancel    contextCancel
-	combines  []memoStatus
-	combined  []string
-	frame     int
-	cancelled bool
-	finished  bool
+	groups         []group
+	current        int
+	events         <-chan event
+	cancel         contextCancel
+	combines       []memoStatus
+	combined       []string
+	frame          int
+	cancelled      bool
+	finished       bool
+	confirmAnswers chan<- bool
 }
 
 type contextCancel func()
@@ -58,6 +59,16 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancel()
 			return m, tea.Quit
 		}
+		if m.confirmAnswers != nil {
+			switch message.String() {
+			case "y":
+				m.confirmAnswers <- true
+				m.confirmAnswers = nil
+			case "n":
+				m.confirmAnswers <- false
+				m.confirmAnswers = nil
+			}
+		}
 	case eventMsg:
 		if !message.ok {
 			return m, tea.Quit
@@ -77,6 +88,9 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if value.HasCombine {
 			m.combines[m.current], m.combined[m.current] = value.Combine, value.CombinedPath
+		}
+		if value.HasConfirm {
+			m.confirmAnswers = value.ConfirmResponse
 		}
 		m.frame++
 		return m, waitEvent(m.events)

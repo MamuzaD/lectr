@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mamuzad/lectr/internal/config"
+	"github.com/mamuzad/lectr/internal/transcribe"
 	"github.com/mamuzad/lectr/internal/ui"
 	"github.com/mamuzad/lectr/internal/watch"
 )
@@ -180,4 +181,20 @@ func loadTestConfig(t *testing.T) config.Config {
 		t.Fatal(err)
 	}
 	return settings
+}
+
+func TestBatchFailurePageIsNotACrashScreen(t *testing.T) {
+	page := batchFailurePage(&transcribe.BatchError{Failures: []error{
+		fmt.Errorf("MATH451: 2026-09-10-pt01.m4a: Rejected repetition loop; retry with: lectr transcribe MATH451 2026-09-10"),
+	}})
+	for _, want := range []string{"1 item needs attention", "retry with: lectr transcribe MATH451 2026-09-10", "Everything else in this run finished."} {
+		if !strings.Contains(page, want) {
+			t.Errorf("batch failure page missing %q:\n%s", want, page)
+		}
+	}
+	for _, unwanted := range []string{"Something went wrong", "lectr help"} {
+		if strings.Contains(page, unwanted) {
+			t.Errorf("batch failure page still reads like a crash (%q):\n%s", unwanted, page)
+		}
+	}
 }

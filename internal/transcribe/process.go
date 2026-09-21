@@ -31,6 +31,7 @@ func runGroups(parent context.Context, values []group, options Options) error {
 		}
 	}
 	terminal := isTerminal(os.Stdout) && isTerminal(os.Stdin)
+	options.Interactive = terminal
 	var interfaceModel model
 	if terminal {
 		interfaceModel = newModel(values, events, cancel)
@@ -72,13 +73,35 @@ func processGroups(ctx context.Context, values []group, options Options, emit fu
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			groupErrors = append(groupErrors, err)
+			groupErrors = append(groupErrors, flattenErrors(err)...)
 		}
 	}
 	if !emit(event{AllComplete: true}) {
 		return ctx.Err()
 	}
-	return errors.Join(groupErrors...)
+	if len(groupErrors) > 0 {
+		return &BatchError{Failures: groupErrors}
+	}
+	return nil
+}
+
+// BatchError reports recordings that failed while the rest of the batch still
+// ran. Each failure was already shown in the queue as it happened.
+type BatchError struct{ Failures []error }
+
+func (e *BatchError) Error() string   { return errors.Join(e.Failures...).Error() }
+func (e *BatchError) Unwrap() []error { return e.Failures }
+
+func flattenErrors(err error) []error {
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		return []error{err}
+	}
+	var flat []error
+	for _, inner := range joined.Unwrap() {
+		flat = append(flat, flattenErrors(inner)...)
+	}
+	return flat
 }
 
 func normalizeResult(err error) error {
@@ -116,7 +139,15 @@ func processGroup(ctx context.Context, value *group, options Options, emit func(
 			continue
 		}
 		if err := transcribeMemo(ctx, value, index, options, emit); err != nil {
-			return err
+			if ctx.Err() != nil {
+				return err
+			}
+			value.Memos[index].Status = failed
+			value.Memos[index].Detail = err.Error()
+			emit(event{Index: index, Status: failed, Detail: err.Error(), HasMemoUpdate: true})
+		}
+		if value.Memos[index].Status == failed {
+			memoErrors = append(memoErrors, memoFailure(value, index))
 		}
 	}
 	if len(memoErrors) > 0 {
@@ -151,7 +182,14 @@ func memoFailure(value *group, index int) error {
 	if memo.Path == "" {
 		name = memo.Stem + ".txt"
 	}
-	return fmt.Errorf("%s: %s: %s; run again with --force", value.Course, name, detail)
+	// A date-level retry recombines the date afterwards; a memo-level one
+	// would skip that. --force is only needed to replace a bad transcript
+	// that is still in place (a rejected one was already moved aside).
+	retry := "lectr transcribe " + value.Course + " " + value.Date
+	if fileExists(filepath.Join(value.TranscriptDir, memo.Stem+".txt")) {
+		return fmt.Errorf("%s: %s: %s; replace it with: %s --force", value.Course, name, detail, retry)
+	}
+	return fmt.Errorf("%s: %s: %s; retry with: %s", value.Course, name, detail, retry)
 }
 
 func transcribeMemo(ctx context.Context, value *group, index int, options Options, emit func(event) bool) error {
@@ -176,11 +214,20 @@ func transcribeMemo(ctx context.Context, value *group, index int, options Option
 			memo.Detail = "Whisper did not create a transcript"
 		}
 		emit(event{Index: index, Status: failed, Detail: memo.Detail, HasMemoUpdate: true})
-		return fmt.Errorf("%s: transcription failed for %s", value.Course, filepath.Base(memo.Path))
+		return nil
 	}
 	problem, err := transcriptQualityProblem(temporaryTranscript)
 	if err != nil {
 		return err
+	}
+	if problem == "repetition loop" && options.Interactive {
+		accepted, err := confirmTrimmedTranscript(ctx, value, index, temporaryTranscript, emit)
+		if err != nil {
+			return err
+		}
+		if accepted {
+			problem = ""
+		}
 	}
 	if problem != "" {
 		rejected := filepath.Join(value.TranscriptDir, memo.Stem+".rejected.txt")
@@ -189,7 +236,7 @@ func transcribeMemo(ctx context.Context, value *group, index int, options Option
 		}
 		memo.Status, memo.Detail = failed, "Rejected "+problem+"; output saved as .rejected.txt"
 		emit(event{Index: index, Status: failed, Detail: memo.Detail, HasMemoUpdate: true})
-		return fmt.Errorf("%s: %s detected in %s", value.Course, problem, filepath.Base(rejected))
+		return nil
 	}
 	if err := os.Rename(temporaryTranscript, transcript); err != nil {
 		return err
@@ -197,6 +244,52 @@ func transcribeMemo(ctx context.Context, value *group, index int, options Option
 	memo.Status, memo.Percent, memo.Detail = complete, 100, ""
 	emit(event{Index: index, Status: complete, Percent: 100, HasMemoUpdate: true})
 	return nil
+}
+
+// truncateForDisplay quotes text for a confirm prompt, shortening it (by
+// rune, not byte, to avoid splitting multi-byte characters) if it's long.
+func truncateForDisplay(text string, limit int) string {
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return fmt.Sprintf("%q", text)
+	}
+	return fmt.Sprintf("%q…", string(runes[:limit]))
+}
+
+// confirmTrimmedTranscript asks whether to trim a detected repetition loop
+// out of path and use the transcript anyway, blocking until the interactive
+// UI answers or ctx is cancelled. It reports true only if trimming actually
+// cleared the quality problem.
+func confirmTrimmedTranscript(ctx context.Context, value *group, index int, path string, emit func(event) bool) (bool, error) {
+	memo := &value.Memos[index]
+	response := make(chan bool, 1)
+	prompt := "Repetition loop detected. Trim it and use this transcript?"
+	if sample, count, err := repetitionLoopSample(path); err == nil && sample != "" {
+		prompt = fmt.Sprintf("Repeated %dx: %s — trim it and use this transcript?", count, truncateForDisplay(sample, 60))
+	}
+	memo.Status, memo.Detail = confirming, prompt
+	if !emit(event{
+		Index: index, Status: confirming, Detail: prompt, HasMemoUpdate: true,
+		HasConfirm: true, ConfirmPrompt: prompt, ConfirmResponse: response,
+	}) {
+		return false, ctx.Err()
+	}
+	select {
+	case accept := <-response:
+		if !accept {
+			return false, nil
+		}
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+	if err := trimRepetitionLoop(path); err != nil {
+		return false, err
+	}
+	problem, err := transcriptQualityProblem(path)
+	if err != nil {
+		return false, err
+	}
+	return problem == "", nil
 }
 
 func whisperCommand(memo Memo, transcriptDir, outputStem, model, prompt string) []string {

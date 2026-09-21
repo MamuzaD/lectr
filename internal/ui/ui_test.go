@@ -89,6 +89,21 @@ func TestLectureRenderShowsFailureDetail(t *testing.T) {
 	}
 }
 
+func TestLectureRenderShowsRepetitionLoopConfirmPrompt(t *testing.T) {
+	view := (Lecture{
+		Course: "MATH451", Date: "2026-09-10",
+		Memos: []Memo{{Part: "01", Duration: "37:13", Status: Confirming, Detail: "Repetition loop detected. Trim it and use this transcript?"}},
+	}).Render()
+	for _, want := range []string{"Repetition loop detected", "y trim & use", "n keep rejected"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("confirm render missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "Local processing") {
+		t.Fatalf("confirm render should replace the usual footer:\n%s", view)
+	}
+}
+
 func TestDividerHandlesSmallWidths(t *testing.T) {
 	if got := Divider(1); got != "" {
 		t.Fatalf("Divider(1) = %q", got)

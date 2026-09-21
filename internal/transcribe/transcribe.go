@@ -38,6 +38,10 @@ type Options struct {
 	Force             bool
 	DryRun            bool
 	ShowSelectionMenu bool
+	// Interactive is computed internally (not a CLI flag): true when both
+	// stdin and stdout are terminals, so a rejected transcript can prompt
+	// for confirmation instead of always failing silently.
+	Interactive bool
 }
 
 type Counts struct {
@@ -48,11 +52,12 @@ type Counts struct {
 type memoStatus = ui.Status
 
 const (
-	waiting  = ui.Waiting
-	active   = ui.Active
-	complete = ui.Complete
-	skipped  = ui.Skipped
-	failed   = ui.Failed
+	waiting    = ui.Waiting
+	active     = ui.Active
+	complete   = ui.Complete
+	skipped    = ui.Skipped
+	failed     = ui.Failed
+	confirming = ui.Confirming
 )
 
 type Memo struct {
@@ -76,16 +81,19 @@ type group struct {
 }
 
 type event struct {
-	Group         int
-	Index         int
-	Status        memoStatus
-	Percent       int
-	Detail        string
-	Combine       memoStatus
-	CombinedPath  string
-	HasMemoUpdate bool
-	HasCombine    bool
-	AllComplete   bool
+	Group           int
+	Index           int
+	Status          memoStatus
+	Percent         int
+	Detail          string
+	Combine         memoStatus
+	CombinedPath    string
+	HasMemoUpdate   bool
+	HasCombine      bool
+	AllComplete     bool
+	HasConfirm      bool
+	ConfirmPrompt   string
+	ConfirmResponse chan bool
 }
 
 func ValidateSelector(value string) bool {

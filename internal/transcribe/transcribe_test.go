@@ -150,11 +150,41 @@ func TestStatusValuesStayInSyncWithSharedUI(t *testing.T) {
 	values := []struct {
 		internal memoStatus
 		shared   ui.Status
-	}{{waiting, ui.Waiting}, {active, ui.Active}, {complete, ui.Complete}, {skipped, ui.Skipped}, {failed, ui.Failed}}
+	}{{waiting, ui.Waiting}, {active, ui.Active}, {complete, ui.Complete}, {skipped, ui.Skipped}, {failed, ui.Failed}, {confirming, ui.Confirming}}
 	for _, value := range values {
 		if value.internal != value.shared {
 			t.Fatalf("status %d != shared status %d", value.internal, value.shared)
 		}
+	}
+}
+
+func TestModelForwardsConfirmAnswerToResponseChannel(t *testing.T) {
+	values := []group{{Course: "MATH451", Date: "2026-09-10", Memos: []Memo{{Part: "01"}}}}
+	m := newModel(values, make(chan event), func() {})
+	response := make(chan bool, 1)
+	updated, cmd := m.Update(eventMsg{ok: true, value: event{
+		Index: 0, Status: confirming, Detail: "Repetition loop detected. Trim it and use this transcript?",
+		HasMemoUpdate: true, HasConfirm: true, ConfirmResponse: response,
+	}})
+	if cmd == nil {
+		t.Fatal("expected Update to keep waiting for events after a confirm prompt")
+	}
+	m = updated.(model)
+	if !strings.Contains(m.View().Content, "y trim & use") {
+		t.Fatalf("expected confirm prompt in view:\n%s", m.View().Content)
+	}
+	updated, _ = m.Update(keyMessage("y"))
+	m = updated.(model)
+	select {
+	case accepted := <-response:
+		if !accepted {
+			t.Fatal("expected 'y' to answer true")
+		}
+	default:
+		t.Fatal("pressing y did not send a response")
+	}
+	if m.confirmAnswers != nil {
+		t.Fatal("confirmAnswers should be cleared once answered")
 	}
 }
 
@@ -217,6 +247,54 @@ func TestTranscriptPassesQualityCheck(t *testing.T) {
 		if err != nil || passes {
 			t.Fatalf("blank transcript: passes=%v err=%v", passes, err)
 		}
+	}
+}
+
+func TestTrimRepetitionLoopClearsTheQualityCheck(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "loop.txt")
+	contents := "About the changes.\nThank you.\nThank you.\n" + strings.Repeat("Let's prove.\n", 8) + "proper initial segment of that.\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := trimRepetitionLoop(path); err != nil {
+		t.Fatal(err)
+	}
+	trimmed, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "About the changes.\nThank you.\nThank you.\nLet's prove.\nproper initial segment of that.\n"
+	if string(trimmed) != want {
+		t.Fatalf("trimmed = %q, want %q", trimmed, want)
+	}
+	if passes, err := transcriptPassesQualityCheck(path); err != nil || !passes {
+		t.Fatalf("trimmed transcript still fails quality check: passes=%v err=%v", passes, err)
+	}
+}
+
+func TestRepetitionLoopSampleReportsTheRepeatedLineAndCount(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "loop.txt")
+	contents := "About the changes.\nAll right.\n" + strings.Repeat("Let's prove.\n", 8) + "proper initial segment of that.\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	line, count, err := repetitionLoopSample(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if line != "Let's prove." || count != 8 {
+		t.Fatalf("sample = %q x%d, want %q x8", line, count, "Let's prove.")
+	}
+}
+
+func TestTruncateForDisplayShortensLongSamplesByRune(t *testing.T) {
+	short := truncateForDisplay("hello", 60)
+	if short != `"hello"` {
+		t.Fatalf("short = %q", short)
+	}
+	long := truncateForDisplay(strings.Repeat("é", 100), 5)
+	if long != `"ééééé"…` {
+		t.Fatalf("long = %q", long)
 	}
 }
 
@@ -354,9 +432,13 @@ exit 7
 		t.Fatal(err)
 	}
 	value := group{Course: "MATH351", Date: "2026-08-25", TranscriptDir: transcriptDir, Memos: []Memo{{Course: "MATH351", Path: filepath.Join(directory, "memo.m4a"), Stem: "2026-08-25-pt01", Part: "01"}}}
-	err := transcribeMemo(context.Background(), &value, 0, Options{Model: DefaultModel}, func(event) bool { return true })
-	if err == nil || !strings.Contains(err.Error(), "transcription failed") {
+	// A failed transcription is reported through the memo's status, not a
+	// returned error, so one bad recording doesn't abort the whole run.
+	if err := transcribeMemo(context.Background(), &value, 0, Options{Model: DefaultModel}, func(event) bool { return true }); err != nil {
 		t.Fatalf("error = %v", err)
+	}
+	if value.Memos[0].Status != failed || value.Memos[0].Detail != "error: fake failure" {
+		t.Fatalf("memo status = %+v", value.Memos[0])
 	}
 	contents, readErr := os.ReadFile(destination)
 	if readErr != nil || string(contents) != "keep me\n" {
@@ -384,15 +466,182 @@ done
 		t.Fatal(err)
 	}
 	value := group{Course: "MATH351", TranscriptDir: transcriptDir, Memos: []Memo{{Course: "MATH351", Path: filepath.Join(directory, "memo.m4a"), Stem: "2026-08-25-pt01", Part: "01"}}}
-	err := transcribeMemo(context.Background(), &value, 0, Options{Model: DefaultModel}, func(event) bool { return true })
-	if err == nil || !strings.Contains(err.Error(), "empty transcript") {
+	// A rejected transcript is reported through the memo's status, not a
+	// returned error, so one bad recording doesn't abort the whole run.
+	if err := transcribeMemo(context.Background(), &value, 0, Options{Model: DefaultModel}, func(event) bool { return true }); err != nil {
 		t.Fatalf("error = %v", err)
+	}
+	if value.Memos[0].Status != failed || !strings.Contains(value.Memos[0].Detail, "empty transcript") {
+		t.Fatalf("memo status = %+v", value.Memos[0])
 	}
 	if _, statErr := os.Stat(filepath.Join(transcriptDir, "2026-08-25-pt01.txt")); !os.IsNotExist(statErr) {
 		t.Fatalf("blank output was published: %v", statErr)
 	}
 	if _, statErr := os.Stat(filepath.Join(transcriptDir, "2026-08-25-pt01.rejected.txt")); statErr != nil {
 		t.Fatalf("rejected output missing: %v", statErr)
+	}
+}
+
+func TestTranscribeMemoInteractiveAcceptTrimsRepetitionLoop(t *testing.T) {
+	directory := t.TempDir()
+	installFakeWhisper(t, directory, `
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output-dir) output_dir="$2"; shift 2 ;;
+    --output-name) output_name="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+{
+  printf 'All right.\n'
+  for i in 1 2 3 4 5 6 7 8; do printf "Let's prove.\n"; done
+  printf 'proper initial segment of that.\n'
+} > "$output_dir/$output_name.txt"
+`)
+	transcriptDir := filepath.Join(directory, "transcripts")
+	if err := os.Mkdir(transcriptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	value := group{Course: "MATH451", TranscriptDir: transcriptDir, Memos: []Memo{{Course: "MATH451", Path: filepath.Join(directory, "memo.m4a"), Stem: "2026-09-10-pt01", Part: "01"}}}
+	var confirmPrompt string
+	emit := func(message event) bool {
+		if message.HasConfirm {
+			confirmPrompt = message.ConfirmPrompt
+			message.ConfirmResponse <- true
+		}
+		return true
+	}
+	if err := transcribeMemo(context.Background(), &value, 0, Options{Model: DefaultModel, Interactive: true}, emit); err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if !strings.Contains(confirmPrompt, "Let's prove.") || !strings.Contains(confirmPrompt, "8x") {
+		t.Fatalf("confirm prompt = %q, want it to name the repeated line and count", confirmPrompt)
+	}
+	if value.Memos[0].Status != complete {
+		t.Fatalf("memo status = %+v", value.Memos[0])
+	}
+	contents, err := os.ReadFile(filepath.Join(transcriptDir, "2026-09-10-pt01.txt"))
+	if err != nil {
+		t.Fatalf("accepted transcript missing: %v", err)
+	}
+	want := "All right.\nLet's prove.\nproper initial segment of that.\n"
+	if string(contents) != want {
+		t.Fatalf("transcript = %q, want %q", contents, want)
+	}
+	if _, statErr := os.Stat(filepath.Join(transcriptDir, "2026-09-10-pt01.rejected.txt")); !os.IsNotExist(statErr) {
+		t.Fatalf("rejected file should not exist after accepting the trim: %v", statErr)
+	}
+}
+
+func TestTranscribeMemoInteractiveDeclineKeepsRejection(t *testing.T) {
+	directory := t.TempDir()
+	installFakeWhisper(t, directory, `
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output-dir) output_dir="$2"; shift 2 ;;
+    --output-name) output_name="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+{
+  printf 'All right.\n'
+  for i in 1 2 3 4 5 6 7 8; do printf "Let's prove.\n"; done
+  printf 'proper initial segment of that.\n'
+} > "$output_dir/$output_name.txt"
+`)
+	transcriptDir := filepath.Join(directory, "transcripts")
+	if err := os.Mkdir(transcriptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	value := group{Course: "MATH451", TranscriptDir: transcriptDir, Memos: []Memo{{Course: "MATH451", Path: filepath.Join(directory, "memo.m4a"), Stem: "2026-09-10-pt01", Part: "01"}}}
+	emit := func(message event) bool {
+		if message.HasConfirm {
+			message.ConfirmResponse <- false
+		}
+		return true
+	}
+	if err := transcribeMemo(context.Background(), &value, 0, Options{Model: DefaultModel, Interactive: true}, emit); err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if value.Memos[0].Status != failed || !strings.Contains(value.Memos[0].Detail, "repetition loop") {
+		t.Fatalf("memo status = %+v", value.Memos[0])
+	}
+	if _, statErr := os.Stat(filepath.Join(transcriptDir, "2026-09-10-pt01.txt")); !os.IsNotExist(statErr) {
+		t.Fatalf("declined transcript should not be published: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(transcriptDir, "2026-09-10-pt01.rejected.txt")); statErr != nil {
+		t.Fatalf("rejected output missing: %v", statErr)
+	}
+}
+
+func TestTranscribeMemoConfirmationCancellationDoesNotHang(t *testing.T) {
+	directory := t.TempDir()
+	installFakeWhisper(t, directory, `
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output-dir) output_dir="$2"; shift 2 ;;
+    --output-name) output_name="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+{
+  printf 'All right.\n'
+  for i in 1 2 3 4 5 6 7 8; do printf "Let's prove.\n"; done
+} > "$output_dir/$output_name.txt"
+`)
+	transcriptDir := filepath.Join(directory, "transcripts")
+	if err := os.Mkdir(transcriptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	value := group{Course: "MATH451", TranscriptDir: transcriptDir, Memos: []Memo{{Course: "MATH451", Path: filepath.Join(directory, "memo.m4a"), Stem: "2026-09-10-pt01", Part: "01"}}}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	// Nobody ever answers the prompt (as if the user walked away, or the
+	// run was cancelled mid-question) - the wait must still return instead
+	// of blocking forever.
+	emit := func(event) bool { return true }
+	started := time.Now()
+	err := transcribeMemo(ctx, &value, 0, Options{Model: DefaultModel, Interactive: true}, emit)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want context.DeadlineExceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > 3*time.Second {
+		t.Fatalf("cancellation took %s", elapsed)
+	}
+}
+
+func TestTranscribeMemoNonInteractiveNeverPromptsForRepetitionLoop(t *testing.T) {
+	directory := t.TempDir()
+	installFakeWhisper(t, directory, `
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output-dir) output_dir="$2"; shift 2 ;;
+    --output-name) output_name="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+{
+  printf 'All right.\n'
+  for i in 1 2 3 4 5 6 7 8; do printf "Let's prove.\n"; done
+} > "$output_dir/$output_name.txt"
+`)
+	transcriptDir := filepath.Join(directory, "transcripts")
+	if err := os.Mkdir(transcriptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	value := group{Course: "MATH451", TranscriptDir: transcriptDir, Memos: []Memo{{Course: "MATH451", Path: filepath.Join(directory, "memo.m4a"), Stem: "2026-09-10-pt01", Part: "01"}}}
+	emit := func(message event) bool {
+		if message.HasConfirm {
+			t.Fatal("non-interactive runs must not prompt for confirmation")
+		}
+		return true
+	}
+	// Options.Interactive left false, as it is for any non-terminal run.
+	if err := transcribeMemo(context.Background(), &value, 0, Options{Model: DefaultModel}, emit); err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if value.Memos[0].Status != failed || !strings.Contains(value.Memos[0].Detail, "repetition loop") {
+		t.Fatalf("memo status = %+v", value.Memos[0])
 	}
 }
 
@@ -413,6 +662,123 @@ func TestTranscribeMemoCancellationStopsProcess(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > 3*time.Second {
 		t.Fatalf("cancellation took %s", elapsed)
+	}
+}
+
+func TestProcessGroupMarksOperationalTranscriptionErrorFailed(t *testing.T) {
+	directory := t.TempDir()
+	bin := filepath.Join(directory, "bin")
+	if err := os.Mkdir(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "mlx_whisper"), []byte("#!/definitely/missing/interpreter\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	transcriptDir := filepath.Join(directory, "transcripts")
+	if err := os.Mkdir(transcriptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	value := group{
+		Course: "MATH351", Date: "2026-08-25", TranscriptDir: transcriptDir, SkipCombine: true,
+		Memos: []Memo{
+			{Course: "MATH351", Path: filepath.Join(directory, "2026-08-25-pt01.m4a"), Stem: "2026-08-25-pt01", Part: "01"},
+			{Course: "MATH351", Path: filepath.Join(directory, "2026-08-25-pt02.m4a"), Stem: "2026-08-25-pt02", Part: "02"},
+		},
+	}
+	hadFailedEvent := false
+	err := processGroup(context.Background(), &value, Options{Model: DefaultModel}, func(message event) bool {
+		hadFailedEvent = hadFailedEvent || message.HasMemoUpdate && message.Status == failed
+		return true
+	})
+	if err == nil || value.Memos[0].Status != failed || value.Memos[0].Detail == "" || !hadFailedEvent {
+		t.Fatalf("operational error: err=%v memo=%+v failedEvent=%v", err, value.Memos[0], hadFailedEvent)
+	}
+	// The failure must not stop later parts of the same date from running.
+	if value.Memos[1].Status != failed {
+		t.Fatalf("second part was not attempted after an operational error: %+v", value.Memos[1])
+	}
+	for _, want := range []string{"2026-08-25-pt01.m4a", "2026-08-25-pt02.m4a", "retry with: lectr transcribe MATH351 2026-08-25"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("operational error %q missing %q", err, want)
+		}
+	}
+}
+
+func TestProcessGroupsReportsEachFailedRecordingWithItsRetry(t *testing.T) {
+	stuck, rejected := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(stuck, "2026-08-25-pt01.txt"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	groups := []group{
+		{Course: "MATH351", Date: "2026-08-25", TranscriptDir: stuck, Memos: []Memo{
+			{Path: "2026-08-25-pt01.m4a", Stem: "2026-08-25-pt01", Status: failed, Detail: "empty transcript"},
+			{Path: "2026-08-25-pt02.m4a", Stem: "2026-08-25-pt02", Status: failed, Detail: "Rejected repetition loop"},
+		}},
+		{Course: "MATH451", Date: "2026-09-10", TranscriptDir: rejected, Memos: []Memo{
+			{Path: "2026-09-10-pt01.m4a", Stem: "2026-09-10-pt01", Status: failed, Detail: "Rejected repetition loop"},
+		}},
+	}
+	err := processGroups(context.Background(), groups, Options{}, func(event) bool { return true })
+	var batch *BatchError
+	if !errors.As(err, &batch) || len(batch.Failures) != 3 {
+		t.Fatalf("processGroups error = %#v, want a BatchError with one entry per failed recording", err)
+	}
+	want := []string{
+		"MATH351: 2026-08-25-pt01.m4a: empty transcript; replace it with: lectr transcribe MATH351 2026-08-25 --force",
+		"MATH351: 2026-08-25-pt02.m4a: Rejected repetition loop; retry with: lectr transcribe MATH351 2026-08-25",
+		"MATH451: 2026-09-10-pt01.m4a: Rejected repetition loop; retry with: lectr transcribe MATH451 2026-09-10",
+	}
+	for index, failure := range batch.Failures {
+		if failure.Error() != want[index] {
+			t.Errorf("failure %d = %q\nwant        %q", index, failure.Error(), want[index])
+		}
+	}
+}
+
+func TestProcessGroupsContinuesPastARejectedGroup(t *testing.T) {
+	directory := t.TempDir()
+	installFakeWhisper(t, directory, `
+audio_path="$1"
+shift
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output-dir) output_dir="$2"; shift 2 ;;
+    --output-name) output_name="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "$audio_path" in
+  *bad*) printf 'loop\nloop\nloop\nloop\nloop\nloop\nloop\n' > "$output_dir/$output_name.txt" ;;
+  *) printf 'a valid transcript\n' > "$output_dir/$output_name.txt" ;;
+esac
+`)
+	transcriptDir := filepath.Join(directory, "transcripts")
+	if err := os.Mkdir(transcriptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	groups := []group{
+		{Course: "MATH451", Date: "2026-09-10", TranscriptDir: transcriptDir,
+			Memos: []Memo{{Course: "MATH451", Path: filepath.Join(directory, "bad.m4a"), Stem: "2026-09-10-pt01", Part: "01"}}},
+		{Course: "MATH451", Date: "2026-09-15", TranscriptDir: transcriptDir,
+			Memos: []Memo{{Course: "MATH451", Path: filepath.Join(directory, "good.m4a"), Stem: "2026-09-15-pt01", Part: "01"}}},
+	}
+	// One rejected recording must not stop the rest of the batch, but the
+	// final result still reports that the batch was only partially successful.
+	if err := processGroups(context.Background(), groups, Options{Model: DefaultModel}, func(event) bool { return true }); err == nil || !strings.Contains(err.Error(), "repetition loop") {
+		t.Fatalf("processGroups error = %v, want aggregate rejection after continuing", err)
+	}
+	if groups[0].Memos[0].Status != failed {
+		t.Fatalf("expected the bad recording to be marked failed, got %+v", groups[0].Memos[0])
+	}
+	if groups[1].Memos[0].Status != complete {
+		t.Fatalf("expected the second group to still be transcribed, got %+v", groups[1].Memos[0])
+	}
+	if _, err := os.Stat(filepath.Join(transcriptDir, "2026-09-15-pt01.txt")); err != nil {
+		t.Fatalf("second group's transcript was not produced: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(transcriptDir, "2026-09-10.txt")); !os.IsNotExist(err) {
+		t.Fatalf("combined transcript should not be published for a group with a failed part: %v", err)
 	}
 }
 

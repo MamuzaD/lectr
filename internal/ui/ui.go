@@ -103,6 +103,7 @@ const (
 	Complete
 	Skipped
 	Failed
+	Confirming
 )
 
 type Memo struct {
@@ -177,6 +178,10 @@ func (lecture Lecture) Render() string {
 			lines = append(lines,
 				lipgloss.NewStyle().Foreground(Orange).Render(spinner)+"  pt"+memo.Part+"  "+lipgloss.NewStyle().Foreground(White).Render(detail)+MutedText("  "+memo.Duration+" audio"),
 				"     "+bar.ViewAs(float64(memo.Percent)/100), "")
+		case Confirming:
+			lines = append(lines,
+				lipgloss.NewStyle().Foreground(Amber).Render("?")+"  pt"+memo.Part+"  "+lipgloss.NewStyle().Foreground(White).Render(memo.Detail),
+				"")
 		default:
 			lines = append(lines, lipgloss.NewStyle().Foreground(Dim).Render("○  pt"+memo.Part+"  Waiting        "+memo.Duration+" audio"), "")
 		}
@@ -195,8 +200,21 @@ func (lecture Lecture) Render() string {
 		}
 	}
 	lines = append(lines, "")
-	lines = append(lines, processingFooter()...)
+	if lectureIsConfirming(lecture) {
+		lines = append(lines, MutedText("y trim & use  ·  n keep rejected"), "", Divider(52))
+	} else {
+		lines = append(lines, processingFooter()...)
+	}
 	return strings.Join(lines, "\n")
+}
+
+func lectureIsConfirming(lecture Lecture) bool {
+	for _, memo := range lecture.Memos {
+		if memo.Status == Confirming {
+			return true
+		}
+	}
+	return false
 }
 
 func processingFooter() []string {
