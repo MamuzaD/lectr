@@ -36,13 +36,41 @@ You need an Apple silicon Mac with:
 - `ffprobe`
 - `mlx_whisper`
 
-## Setup
+## Installation
 
 ```bash
 brew install ffmpeg
 uv tool install mlx-whisper
+go install github.com/mamuzad/lectr/cmd/lectr@latest
+```
+
+`lectr` lands in `$(go env GOPATH)/bin`, so keep that on your `PATH`. Re-run
+`go install` to update; `lectr help` shows the installed version.
+
+<details>
+<summary>Other ways to install</summary>
+
+### Build from Source
+
+```bash
+git clone https://github.com/mamuzad/lectr.git
+cd lectr
 make build
-./lectr configure
+./lectr help
+```
+
+Run `make test` and `make vet` to check changes.
+
+### Install from releases
+
+[Grab the Apple silicon build here](https://github.com/mamuzad/lectr/releases)
+
+</details>
+
+## Quick Start
+
+```bash
+lectr configure
 ```
 
 `lectr configure` creates `~/.config/lectr/config.json`. It collects the Voice
@@ -54,25 +82,25 @@ another file.
 
 ```bash
 # preview pending recordings or open the interactive backlog
-./lectr transcribe --dry-run
-./lectr transcribe
+lectr transcribe --dry-run
+lectr transcribe
 
 # limit transcription to a course, date, or recording
-./lectr transcribe MATH351
-./lectr transcribe MATH351 2026-08-25
-./lectr transcribe 2026-08-25-pt01.m4a
+lectr transcribe MATH351
+lectr transcribe MATH351 2026-08-25
+lectr transcribe 2026-08-25-pt01.m4a
 
 # route Voice Memos automatically with launchd
-./lectr watch install
-./lectr watch status
-./lectr watch uninstall
+lectr watch install
+lectr watch status
+lectr watch uninstall
 
 # print command help or shell completion
-./lectr help
-source <(./lectr completion zsh)
+lectr help
+source <(lectr completion zsh)
 ```
 
-The watcher logs to `~/Library/Logs/lectr.log`. Run `./lectr watch` without an
+The watcher logs to `~/Library/Logs/lectr.log`. Run `lectr watch` without an
 action to see its state, paths, and transcription backlog.
 
 Recordings use the name `YYYY-MM-DD-ptNN.m4a`. Existing valid part transcripts
@@ -80,10 +108,3 @@ are skipped unless you pass `--force`.
 
 Interactive `lectr transcribe` runs open the backlog menu before transcription.
 Dry runs and non-interactive invocations do not prompt.
-
-## Development
-
-```bash
-make test
-make vet
-```

@@ -17,7 +17,7 @@ type Command struct {
 	Description string
 }
 
-func Help(description, usage, configPath string, commands []Command) string {
+func Help(description, usage, configPath, version string, commands []Command) string {
 	lines := []string{
 		lipgloss.NewStyle().Foreground(White).Render(description), "",
 		lipgloss.NewStyle().Foreground(Muted).Render("Usage"),
@@ -29,6 +29,7 @@ func Help(description, usage, configPath string, commands []Command) string {
 		lines = append(lines, "  "+name+MutedText(command.Description))
 	}
 	lines = append(lines, "", lipgloss.NewStyle().Foreground(Muted).Render("Config"), "  "+Gradient(configPath))
+	lines = append(lines, "", lipgloss.NewStyle().Foreground(Muted).Render("Version"), "  "+MutedText(version))
 	return Shell(strings.Join(lines, "\n"))
 }
 

@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"runtime/debug"
 
 	"github.com/mamuzad/lectr/internal/config"
 	"github.com/mamuzad/lectr/internal/ui"
@@ -37,8 +38,16 @@ func printUsage(configPath string) {
 		"Route and transcribe lecture recordings locally on this Mac.",
 		"lectr <command> [--config PATH] [options]",
 		path,
+		buildVersion(),
 		publicCommands,
 	))
+}
+
+func buildVersion() string {
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" {
+		return info.Main.Version
+	}
+	return "(devel)"
 }
 
 func printCommandUsage(command, configPath string) error {

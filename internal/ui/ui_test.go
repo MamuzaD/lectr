@@ -145,10 +145,10 @@ func TestBacklogMenuUsesSharedUI(t *testing.T) {
 
 func TestHelpUsesSharedLogoAndCommandLayout(t *testing.T) {
 	view := stripANSI(Help(
-		"Local lectures.", "lectr <command>", "/tmp/config.json",
+		"Local lectures.", "lectr <command>", "/tmp/config.json", "v0.2.0",
 		[]Command{{Name: "transcribe", Description: "Transcribe recordings"}},
 	))
-	for _, value := range []string{"▜     ▗   ", "Local lectures.", "lectr <command>", "transcribe", "/tmp/config.json"} {
+	for _, value := range []string{"▜     ▗   ", "Local lectures.", "lectr <command>", "transcribe", "/tmp/config.json", "Version", "v0.2.0"} {
 		if !strings.Contains(view, value) {
 			t.Fatalf("help missing %q:\n%s", value, view)
 		}
