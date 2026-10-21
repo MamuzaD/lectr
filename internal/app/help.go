@@ -67,11 +67,12 @@ func commandUsage(command, configPath string) (string, error) {
 	switch command {
 	case "transcribe":
 		return ui.CommandHelp(
-			"Transcribe pending lecture recordings locally with MLX Whisper.",
-			"lectr transcribe [--config PATH] [--force] [--dry-run] [COURSE] [DATE|MEMO]",
+			"Transcribe locally with Whisper, or extract saved Apple text with --apple.",
+			"lectr transcribe [--config PATH] [--force] [--apple] [--dry-run] [COURSE] [DATE|MEMO]",
 			"Options",
 			[]ui.Command{
 				{Name: "--force", Description: "Replace existing part transcripts"},
+				{Name: "--apple", Description: "Extract Apple's saved transcript (no Whisper)"},
 				{Name: "--dry-run", Description: "Preview work without changing files"},
 				{Name: "--config PATH", Description: "Use another config file"},
 			},

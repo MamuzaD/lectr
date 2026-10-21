@@ -19,12 +19,13 @@ func runTranscribe(ctx context.Context, settings config.Config, arguments []stri
 	}
 	set := flag.NewFlagSet("lectr transcribe", flag.ContinueOnError)
 	force := set.Bool("force", false, "replace existing part transcripts")
+	apple := set.Bool("apple", false, "extract Apple's saved transcript instead of running Whisper")
 	dryRun := set.Bool("dry-run", false, "show work without changing files")
 	if err := set.Parse(flags); err != nil {
 		return err
 	}
 	if len(positionals) > 2 {
-		return errors.New("usage: lectr transcribe [--force] [--dry-run] [COURSE] [DATE|MEMO]")
+		return errors.New("usage: lectr transcribe [--force] [--apple] [--dry-run] [COURSE] [DATE|MEMO]")
 	}
 	courses := settings.CourseNames()
 	selector := ""
@@ -47,7 +48,7 @@ func runTranscribe(ctx context.Context, settings config.Config, arguments []stri
 	}
 	return transcribe.Run(ctx, transcribe.Options{
 		Root: settings.Root, Courses: courses, Prompts: settings.Prompts(), Selector: selector,
-		Model: settings.Model, Location: settings.Location(), Force: *force, DryRun: *dryRun,
+		Model: settings.Model, Location: settings.Location(), Force: *force, Apple: *apple, DryRun: *dryRun,
 		ShowSelectionMenu: true,
 	})
 }
@@ -56,7 +57,7 @@ func normalizeTranscribeArgs(arguments []string) ([]string, []string, error) {
 	flags, positionals := make([]string, 0), make([]string, 0)
 	for _, argument := range arguments {
 		switch argument {
-		case "--force", "--dry-run", "-h", "--help":
+		case "--force", "--apple", "--dry-run", "-h", "--help":
 			flags = append(flags, argument)
 		default:
 			if strings.HasPrefix(argument, "-") {

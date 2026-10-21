@@ -75,6 +75,20 @@ func TestCompletionReceiptDoesNotRenderFailureAsSuccess(t *testing.T) {
 	}
 }
 
+func TestAppleTranscriptPartsAreLabelled(t *testing.T) {
+	lecture := Lecture{Course: "MATH451", Date: "2026-08-25", Memos: []Memo{{Part: "01", Duration: "51:33", Status: Complete, Detail: AppleTranscript}}}
+	if view := stripANSI(lecture.Render()); !strings.Contains(view, "Complete       Apple transcript  ·  51:33 audio") {
+		t.Fatalf("Apple part render:\n%s", view)
+	}
+	if view := stripANSI(CompletedTranscriptionQueue([]Lecture{lecture})); !strings.Contains(view, "1 recording transcribed (Apple)") {
+		t.Fatalf("Apple receipt:\n%s", view)
+	}
+	lecture.Memos[0].Detail = ""
+	if view := stripANSI(CompletedTranscriptionQueue([]Lecture{lecture})); strings.Contains(view, "(") {
+		t.Fatalf("Whisper receipt gained an engine label:\n%s", view)
+	}
+}
+
 var testANSI = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
 
 func stripANSI(value string) string { return testANSI.ReplaceAllString(value, "") }

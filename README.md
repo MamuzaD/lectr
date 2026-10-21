@@ -7,7 +7,8 @@
 ![Build](https://img.shields.io/github/actions/workflow/status/mamuzad/lectr/release.yml?label=build&logo=github)
 
 `lectr` routes synced Apple Voice Memos into course folders, then transcribes
-them on your Mac with `mlx_whisper`. It uses one binary and one config file.
+them on your Mac with `mlx_whisper`. Use `--apple` to extract a saved Apple
+transcript instead. It uses one binary and one config file.
 There is no server, account, or cloud transcription.
 
 > I built `lectr` because I needed a consistent way to turn lectures into transcripts I could actually use.
@@ -24,8 +25,8 @@ https://github.com/user-attachments/assets/6755966d-6847-443a-9415-df9a8b7bcf81
 
 1. The optional watcher matches each recording against your class schedule.
 2. The watcher copies each match into `<root>/<course>/memos`.
-3. `lectr transcribe` writes part transcripts to
-   `<root>/<course>/transcripts`, then combines each lecture into one
+3. `lectr transcribe` runs Whisper, or extracts saved Apple text with `--apple`. It writes
+   part transcripts to `<root>/<course>/transcripts`, then combines each lecture into one
    `YYYY-MM-DD.txt` file.
 
 ## Requirements
@@ -34,18 +35,25 @@ You need an Apple silicon Mac with:
 
 - Go 1.26 or newer
 - `ffprobe`
-- `mlx_whisper`
+
+`mlx_whisper` is required for default transcription. Extraction with `--apple`
+does not require it.
 
 ## Installation
 
 ```bash
 brew install ffmpeg
-uv tool install mlx-whisper
 go install github.com/mamuzad/lectr/cmd/lectr@latest
 ```
 
 `lectr` lands in `$(go env GOPATH)/bin`, so keep that on your `PATH`. Re-run
 `go install` to update; `lectr help` shows the installed version.
+
+For default Whisper transcription:
+
+```bash
+uv tool install mlx-whisper
+```
 
 <details>
 <summary>Other ways to install</summary>
@@ -90,6 +98,12 @@ lectr transcribe MATH351
 lectr transcribe MATH351 2026-08-25
 lectr transcribe 2026-08-25-pt01.m4a
 
+# extract Apple's saved transcript without running Whisper
+lectr transcribe MATH351 2026-08-25 --apple
+
+# replace an existing transcript with Apple's text
+lectr transcribe MATH351 2026-08-25 --apple --force
+
 # route Voice Memos automatically with launchd
 lectr watch install
 lectr watch status
@@ -108,3 +122,20 @@ are skipped unless you pass `--force`.
 
 Interactive `lectr transcribe` runs open the backlog menu before transcription.
 Dry runs and non-interactive invocations do not prompt.
+
+`--apple` reads the transcript already embedded in a saved recording. It does
+not trigger Apple's transcription or read the live text shown while recording.
+The routed copy must already contain the transcript: opening the original in
+Voice Memos later does not update an existing copy in a course folder. Missing,
+empty, malformed, or rejected Apple transcripts produce an error that points at
+Whisper instead. A recording that cannot be read yet, such as one still syncing
+from iCloud, suggests running `--apple` again.
+
+Whisper remains the default because saved Apple text was less readable for
+technical terms in sampled math lectures. Apple extraction avoids transcription
+time and can be useful when its text is adequate. It is an explicit source
+choice rather than a claim of higher accuracy.
+
+`--force` replaces existing transcripts using the selected source. The configured
+model and course prompts apply to Whisper only. Parts extracted from Apple are
+marked "Apple transcript" when they complete.

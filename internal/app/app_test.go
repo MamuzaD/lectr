@@ -139,7 +139,7 @@ func TestEachPublicCommandHasFocusedHelp(t *testing.T) {
 		command string
 		want    []string
 	}{
-		{"transcribe", []string{"lectr transcribe [--config PATH]", "--force", "--dry-run", "YYYY-MM-DD"}},
+		{"transcribe", []string{"lectr transcribe [--config PATH]", "--force", "--apple", "--dry-run", "YYYY-MM-DD"}},
 		{"watch", []string{"lectr watch [--config PATH]", "install", "uninstall", "~/Library/Logs/lectr.log"}},
 		{"configure", []string{"lectr configure [--config PATH]", "ACCESSIBLE=1", "cancelling writes nothing"}},
 		{"completion", []string{"lectr completion zsh|bash", "source <(lectr completion zsh)"}},
@@ -196,5 +196,12 @@ func TestBatchFailurePageIsNotACrashScreen(t *testing.T) {
 		if strings.Contains(page, unwanted) {
 			t.Errorf("batch failure page still reads like a crash (%q):\n%s", unwanted, page)
 		}
+	}
+}
+
+func TestNormalizeAppleTranscribeFlag(t *testing.T) {
+	flags, positionals, err := normalizeTranscribeArgs([]string{"MATH451", "--apple", "2026-10-20", "--force"})
+	if err != nil || !reflect.DeepEqual(flags, []string{"--apple", "--force"}) || !reflect.DeepEqual(positionals, []string{"MATH451", "2026-10-20"}) {
+		t.Fatalf("flags=%v positionals=%v err=%v", flags, positionals, err)
 	}
 }

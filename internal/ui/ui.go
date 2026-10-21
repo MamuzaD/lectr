@@ -106,6 +106,10 @@ const (
 	Confirming
 )
 
+// AppleTranscript is the detail of a part whose text came from Voice Memos
+// rather than Whisper.
+const AppleTranscript = "Apple transcript"
+
 type Memo struct {
 	Part     string
 	Duration string
@@ -165,7 +169,11 @@ func (lecture Lecture) Render() string {
 	for _, memo := range lecture.Memos {
 		switch memo.Status {
 		case Complete:
-			lines = append(lines, statusLine("✓", Green, "pt"+memo.Part, "Complete", memo.Duration+" audio"), "")
+			detail := memo.Duration + " audio"
+			if memo.Detail != "" {
+				detail = memo.Detail + "  ·  " + detail
+			}
+			lines = append(lines, statusLine("✓", Green, "pt"+memo.Part, "Complete", detail), "")
 		case Skipped:
 			lines = append(lines, statusLine("✓", Green, "pt"+memo.Part, "Already exists", memo.Duration+" audio"), "")
 		case Failed:
@@ -329,6 +337,14 @@ func completionReceipt(lecture Lecture) string {
 		}
 	} else if failed {
 		result, icon, iconColor = " processing failed", "×", Red
+	}
+	if !failed {
+		for _, memo := range lecture.Memos {
+			if memo.Status == Complete && memo.Detail == AppleTranscript {
+				result += " (Apple)"
+				break
+			}
+		}
 	}
 	return lipgloss.NewStyle().Foreground(iconColor).Render(icon) + "  " +
 		lipgloss.NewStyle().Foreground(White).Bold(true).Render(lecture.Course) +

@@ -15,6 +15,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/term"
+
+	"github.com/mamuzad/lectr/internal/ui"
 )
 
 func runGroups(parent context.Context, values []group, options Options) error {
@@ -117,6 +119,9 @@ func printEvent(value *group, message event) {
 	if message.HasMemoUpdate && (message.Status == complete || message.Status == failed) {
 		memo := value.Memos[message.Index]
 		label := "complete"
+		if message.Status == complete && message.Detail != "" {
+			label += " (" + message.Detail + ")"
+		}
 		if message.Status == failed {
 			label = "failed: " + message.Detail
 		}
@@ -132,13 +137,14 @@ func processGroup(ctx context.Context, value *group, options Options, emit func(
 	for index := range value.Memos {
 		if value.Memos[index].Status == failed {
 			emit(event{Index: index, Status: failed, Detail: value.Memos[index].Detail, HasMemoUpdate: true})
-			memoErrors = append(memoErrors, memoFailure(value, index))
+			memoErrors = append(memoErrors, memoFailure(value, index, nil))
 			continue
 		}
 		if value.Memos[index].Status != waiting {
 			continue
 		}
-		if err := transcribeMemo(ctx, value, index, options, emit); err != nil {
+		err := transcribeMemo(ctx, value, index, options, emit)
+		if err != nil {
 			if ctx.Err() != nil {
 				return err
 			}
@@ -147,14 +153,13 @@ func processGroup(ctx context.Context, value *group, options Options, emit func(
 			emit(event{Index: index, Status: failed, Detail: err.Error(), HasMemoUpdate: true})
 		}
 		if value.Memos[index].Status == failed {
-			memoErrors = append(memoErrors, memoFailure(value, index))
+			memoErrors = append(memoErrors, memoFailure(value, index, err))
 		}
 	}
-	if len(memoErrors) > 0 {
+	// A failure that left an earlier transcript in place still has every part
+	// on disk, so the combined file is rebuilt from what is actually there.
+	if value.SkipCombine || (len(memoErrors) > 0 && !allPartsTranscribed(*value)) {
 		return errors.Join(memoErrors...)
-	}
-	if value.SkipCombine {
-		return nil
 	}
 	if !emit(event{Combine: active, HasCombine: true}) {
 		return ctx.Err()
@@ -166,13 +171,31 @@ func processGroup(ctx context.Context, value *group, options Options, emit func(
 	combined, err := combinePartsForGroup(value.Course, value.Date, value.TranscriptDir, stems)
 	if err != nil {
 		emit(event{Combine: failed, Detail: err.Error(), HasCombine: true})
-		return err
+		return errors.Join(append(memoErrors, err)...)
 	}
 	emit(event{Combine: complete, CombinedPath: combined, HasCombine: true})
-	return nil
+	return errors.Join(memoErrors...)
 }
 
-func memoFailure(value *group, index int) error {
+func allPartsTranscribed(value group) bool {
+	for _, memo := range value.Memos {
+		inspection := inspectTranscript(filepath.Join(value.TranscriptDir, memo.Stem+".txt"))
+		if !inspection.Exists || inspection.Problem != "" || inspection.Err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+var (
+	errAppleUnavailable  = errors.New("Apple transcript unavailable")
+	errNoAppleTranscript = errors.New("no embedded Apple transcript")
+	errAppleRejected     = errors.New("Apple transcript rejected")
+)
+
+// memoFailure adds the next step to a failed part. cause is the error
+// transcribeMemo returned, or nil when the part failed without one.
+func memoFailure(value *group, index int, cause error) error {
 	memo := value.Memos[index]
 	detail := memo.Detail
 	if detail == "" {
@@ -186,18 +209,69 @@ func memoFailure(value *group, index int) error {
 	// would skip that. --force is only needed to replace a bad transcript
 	// that is still in place (a rejected one was already moved aside).
 	retry := "lectr transcribe " + value.Course + " " + value.Date
-	if fileExists(filepath.Join(value.TranscriptDir, memo.Stem+".txt")) {
+	existing := inspectTranscript(filepath.Join(value.TranscriptDir, memo.Stem+".txt"))
+	exists := existing.Exists
+	force := ""
+	if exists {
+		force = " --force"
+	}
+	// A read error may clear once the recording finishes syncing, so it is
+	// worth extracting again. Anything else wrong with Apple's text will not
+	// change, so it points at Whisper, which without --force only fills in
+	// missing parts and leaves Apple text extracted for the others alone.
+	var readErr appleReadError
+	appleText := errors.Is(cause, errAppleUnavailable) || errors.Is(cause, errNoAppleTranscript) || errors.Is(cause, errAppleRejected)
+	switch {
+	case appleText && exists && existing.Problem == "" && existing.Err == nil:
+		return fmt.Errorf("%s: %s: %s; kept the existing transcript", value.Course, name, detail)
+	case errors.As(cause, &readErr):
+		return fmt.Errorf("%s: %s: %s; retry with: %s --apple%s", value.Course, name, detail, retry, force)
+	case appleText:
+		return fmt.Errorf("%s: %s: %s; transcribe it with Whisper: %s%s", value.Course, name, detail, retry, force)
+	}
+	if exists {
 		return fmt.Errorf("%s: %s: %s; replace it with: %s --force", value.Course, name, detail, retry)
 	}
 	return fmt.Errorf("%s: %s: %s; retry with: %s", value.Course, name, detail, retry)
 }
 
 func transcribeMemo(ctx context.Context, value *group, index int, options Options, emit func(event) bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	memo := &value.Memos[index]
 	transcript := filepath.Join(value.TranscriptDir, memo.Stem+".txt")
 	temporaryStem := fmt.Sprintf("%s-new-%d-%d", memo.Stem, os.Getpid(), time.Now().UnixNano())
 	temporaryTranscript := filepath.Join(value.TranscriptDir, temporaryStem+".txt")
 	defer os.Remove(temporaryTranscript)
+	if options.Apple {
+		text, err := appleTranscript(memo.Path)
+		if err != nil {
+			return fmt.Errorf("%w: %w", errAppleUnavailable, err)
+		}
+		if text == "" {
+			return errNoAppleTranscript
+		}
+		if err := os.WriteFile(temporaryTranscript, []byte(text+"\n"), 0o644); err != nil {
+			return err
+		}
+		problem, err := transcriptQualityProblem(temporaryTranscript)
+		if err != nil {
+			return err
+		}
+		if problem != "" {
+			return fmt.Errorf("%w: %s", errAppleRejected, problem)
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := os.Rename(temporaryTranscript, transcript); err != nil {
+			return err
+		}
+		memo.Status, memo.Percent, memo.Detail = complete, 100, ui.AppleTranscript
+		emit(event{Index: index, Status: complete, Percent: 100, Detail: memo.Detail, HasMemoUpdate: true})
+		return nil
+	}
 	memo.Status, memo.Percent, memo.Detail = active, 0, "Starting Whisper"
 	if !emit(event{Index: index, Status: active, Percent: 0, Detail: memo.Detail, HasMemoUpdate: true}) {
 		return ctx.Err()

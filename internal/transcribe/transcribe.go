@@ -36,6 +36,7 @@ type Options struct {
 	Model             string
 	Location          *time.Location
 	Force             bool
+	Apple             bool
 	DryRun            bool
 	ShowSelectionMenu bool
 	// Interactive is computed internally (not a CLI flag): true when both
@@ -184,7 +185,8 @@ func Run(ctx context.Context, options Options) error {
 			return nil
 		}
 	}
-	if anyPendingMemos(groups) {
+	// Apple extraction never runs Whisper, so only the default engine needs it.
+	if !options.Apple && anyPendingMemos(groups) {
 		if _, err := exec.LookPath("mlx_whisper"); err != nil {
 			return errors.New("mlx_whisper is missing; install it with: uv tool install mlx-whisper")
 		}
@@ -394,6 +396,7 @@ func inspectTranscript(path string) transcriptInspection {
 
 func printDryRun(groups []group, options Options) error {
 	for _, value := range groups {
+		missingPart := false
 		for _, memo := range value.Memos {
 			transcript := filepath.Join(value.TranscriptDir, memo.Stem+".txt")
 			_, err := os.Stat(transcript)
@@ -405,9 +408,29 @@ func printDryRun(groups []group, options Options) error {
 			} else if !os.IsNotExist(err) {
 				return err
 			}
+			// Extraction only reads the recording, so a dry run can say which
+			// memos have no Apple transcript before anything is written.
+			if options.Apple && action != "skip existing" {
+				text, appleErr := appleTranscript(memo.Path)
+				switch {
+				case appleErr != nil:
+					action = "fail (Apple transcript unavailable: " + appleErr.Error() + ")"
+					missingPart = missingPart || err != nil
+				case text == "":
+					action = "fail (no embedded Apple transcript)"
+					missingPart = missingPart || err != nil
+				default:
+					action += " with Apple transcript"
+				}
+			}
 			fmt.Printf("%s: would %s: %s\n", value.Course, action, filepath.Base(memo.Path))
 		}
-		if !value.SkipCombine {
+		if value.SkipCombine {
+			continue
+		}
+		if missingPart {
+			fmt.Printf("%s: would not combine %s until every part has a transcript\n", value.Course, value.Date)
+		} else {
 			fmt.Printf("%s: would combine parts -> transcripts/%s.txt\n", value.Course, value.Date)
 		}
 	}
